@@ -137,6 +137,9 @@ void init_pulse() {
 
 
 void run_pulse(uint16_t pulseCycles) {
+    /*
+    Runs pulse and then turns off PWM and PIO sm
+    */
 
     // Loads freewheeling as first PWM pulse
     delay = 250;
@@ -151,6 +154,16 @@ void run_pulse(uint16_t pulseCycles) {
         sleep_ms(1);
         target = cycle; // Sets the target variable which is pulled by the PWM function
     }
+
+    // Turn off PWM
+    pwm_set_enabled(0, false);
+    irq_set_enabled(PWM_IRQ_WRAP, false);
+     
+    // Return to off state
+    pio_sm_put(pio0, sm, stop2free);
+     
+    //Turn off pio
+    pio_sm_set_enabled(pio0, sm, false);
 
     return;
 }
@@ -173,7 +186,7 @@ int main() {
     // Initialize PWM and PIO
     init_pulse();
 
-    // Runs pulse
+    // Runs pulse and then turns off PWM and PIO sm
     run_pulse(199);
 
 
