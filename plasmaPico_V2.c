@@ -8,10 +8,14 @@
 
 #include "pinsToggle.pio.h"
 
-#include "pico/malloc.h"
+// NOTE:
+// Pulse: a single PWM pulse
+// CUTE_Pulse: a 200ms tokamak pulse
+// I'm trying not to use the same language for both, but as of now it's still inconsistent and context-based
 
 
-// pin "addresses"
+// Declare System Variables
+// Pin "Addresses"
 uint32_t S4 = 0x00000008; // 1000
 uint32_t S3 = 0x00000004; // 0100
 uint32_t S2 = 0x00000002; // 0010
@@ -26,165 +30,66 @@ uint32_t __not_in_flash("pwm") nextState, cycleCount;
 uint32_t __not_in_flash("pwm") delay;
 uint32_t __not_in_flash("pwm") target;
 
-// pio state machine
+
+// Number of PIO State Machine
 uint __not_in_flash("pwm") sm;
 
-// Data block
-unsigned char* block; // loaded with data for pulse
-uint16_t __not_in_flash("pwm") block_length_uint;
-
-// Return Block
-uint32_t* pio_block;
-uint8_t pio_block_cs; //is it better to have the checksums calculated at the end as part of return_block()? It's slightly slower but maybe cleaner? TODO: figure this out
-
-// ADC block
-uint16_t* adc_block;
-uint8_t adc_block_cs;
-
-// Facilitates cpu-pwm communication
-uint8_t __not_in_flash("pwm") pwm_flag;
-
-// Helps with lower bound on DCP edge case
-uint8_t __not_in_flash("pwm") last_state = 0;
-
-
-// Device States
-int state;
-#define AWAIT_HEADER 1
-#define AWAIT_SYNC 2
-#define BLOCK_FOUND 3
-#define GETTING_BLOCK 4
-
-// Block Types
-char block_type;
-#define DATA 0x01
-#define MANUAL 0x02
-
-
-// PID Controller
-typedef struct {
-
-    /* Controller Gains */
-    float Kp;
-    float Ki;
-    float Kd;
-
-    /* Output limits */
-    float limMin;
-    float limMax;
-
-    /* Integrator limits */
-    float limMinInt;
-    float limMaxInt;
-
-    /* Sample time (s)*/
-    float T;
-
-    /* Controller "memory" */
-    float integrator;
-    float prevError;        // for integrator
-    float differentiator;
-    float prevMeasurement;  // for differentiator
-
-    /* Controller output */
-    float out;
-
-} pid_controller;
-
-
-void pid_controller_init(pid_controller *pid) {
-
-    // Clear controller variables
-    pid->integrator = 0.0f;
-    pid->prevError = 0.0f;
-
-    pid->differentiator = 0.0f;
-    pid->prevMeasurement = 0.0f;
-
-    pid->out = 0.0f;
-}
-
-
-float __time_critical_func(pid_controller_update)(pid_controller *pid, float setpoint, float measurement) {
-
-    float error = setpoint - measurement;
-
-    float proportional = pid->Kp * error;
-
-    // Integral
-    pid->integrator = pid-> Ki * pid->T * (pid->integrator + error);
-
-    // TODO: Add integrator clamping
-
-    // Derivative
-    pid->differentiator = error - pid->prevError;
-
-
-    // Compute output and apply limits
-    pid->out = proportional + pid->integrator + pid->differentiator;
-
-    if (pid->out > pid->limMax) {pid->out = pid->limMax;}
-    else if (pid->out < pid->limMin) {pid->out = pid->limMin;}
-
-
-    // Store error and measurement for next cycle
-    pid->prevError = error;
-    pid->prevMeasurement = measurement;
-
-
-    // Return controller output
-    return pid->out;
-}
+// Array of Pulse Lengths
+unsigned char* pulseDelays;
+uint16_t __not_in_flash("pwm") pulseDelays_length_uint;
 
 
 void __time_critical_func(on_pwm_wrap)() {
-    pwm_clear_irq(0);
+    /*
+    Runs
+    */
+   // Clears interrupt flag
+   pwm_clear_irq(0);
 
-    //pio_sm_put(pio0, sm, nextState);
-    pio0->txf[sm] = nextState; // Same as pio_sm_put without checking
 
-    // // Calculates delay from data block
-    //target = 52; //block[cycleCount];
-    
-    // Update nextState for next cycle
-    if (target < 100) { // Negative pulses
-        nextState = negCycle;
-        delay = (100-target) * 5; // Delay in PIO cycles @ 25 MHz
+   // Pushes the stored next pulse state to the FIFO
+   //pio_sm_put(pio0, sm, nextState);
+   pio0->txf[sm] = nextState; // Same as pio_sm_put without checking
+
+   
+   // Calculates the following nextState for next cycle
+   //target = 100; // Target values from 0 - 99 are negative pulses. Values from 100 - 199 are positive pulses.
+
+   // Finds nextState from target
+   if (target < 100) { // Negative pulses
+    nextState = negCycle;
+    delay = (100-target) * 5; // Delay in PIO cycles @ 25 MHz
     } else { // Positive pulses
         nextState = possCycle;
-        delay = (target-100) * 5; // Delay in PIO cycles @ 25 MHz
+        delay = (target-99) * 5; // Delay in PIO cycles @ 25 MHz
     }
 
-    // Lower bound on DCP (1 us + switching time)/20 us ~7.5%
-    if (delay < 25) {
-        if (delay > 12 && last_state == 0) { // Subdivides the lower bound "dead zone" into two sections and emulates 3.75% power for that zone
-            delay = 25;
-            last_state = 1;
-        } else {
-            nextState = freeCycle;
-            last_state = 0;
-        }
-    } else {
-        if (delay > 450) {delay = 450;}          // Upper bound on DCP (18 us + switching time)/20 us ~92.5%    
-    }
+    // Sets Lower bound on DCP (1 us + switching time)/20 us ~7.5%
+    if (delay < 25) {nextState = freeCycle;} // TODO: add back in subseviding dead zone
+    // Sets Upper bound on DCP (18 us + switching time)/20 us ~92.5%
+    if (delay > 450) {delay = 450;}              
 
+
+    // Sets nextState for the next cycle with the new delay
     nextState = nextState | ( delay << 8);
 
-    // for debugging
-    //next_state_block[cycleCount] = nextState;
-
-    pwm_flag = 1;
- 
     cycleCount++;
 }
 
 
 void init_pulse() {
+    /*
+    Runs initialization for pulse output:
+        Computes output state definitions
+        Sets up PIO
+        Sets up PWM wrapping
+    */
     static const uint startPin = 10;
 
     set_sys_clock_khz(125000, true); //125000
 
-    // state definitions
+
+    // Computes state definitions
     stop2free = (S2 | S4) << 4;  // Turn on S2 and S4
     free2stop = 0;  // Turn all off
     freeCycle = ((S2 | S4) << 28) | ((S2 | S4) << 24) | ((S2 | S4) << 4) | (S2 | S4);
@@ -196,18 +101,16 @@ void init_pulse() {
     free2neg = ((S1 | S4) << 4) | S4;  // S4 only then S1 and S4
     neg2free = ((S2 | S4) << 4) | S4;  // S4 only then S2 and S4
     negCycle = (neg2free << 24) | free2neg;
- 
-    cycleCount = 0;
 
 
+    // Set Up PIO
     // Choose PIO instance (0 or 1)
     PIO pio = pio0;
 
     // Get first free state machine in PIO 0
     uint sm = pio_claim_unused_sm(pio, true);
 
-    // Add PIO program to PIO instruction memory. SDK will find location and
-    // return with the memory offset of the program.
+    // Add PIO program to PIO instruction memory. SDK will find location and return with the memory offset of the program.
     uint offset = pio_add_program(pio, &pinsToggle_program);
 
     // PIO clock divider
@@ -217,7 +120,7 @@ void init_pulse() {
     pinsToggle_program_init(pio, sm, offset, startPin, div);
 
 
-    // PWM wrapping setup
+    // Set up PWM Wrapping
     pwm_clear_irq(0);
     pwm_set_irq_enabled(0, true);
     irq_set_exclusive_handler(PWM_IRQ_WRAP, on_pwm_wrap);
@@ -229,284 +132,31 @@ void init_pulse() {
     pwm_init(0, &config, false);
 
 
-    // Setting up ADC
-    adc_init();
-
-    // Make sure GPIO is high-impedance, no pullups etc
-    adc_gpio_init(26);
-    // Select ADC input 0 (GPIO26)
-    adc_select_input(0);
-
     return;
 }
 
 
-void shutdown_pulse() {
-
-    // Turn off PWM
-    pwm_set_enabled(0, false);
-    irq_set_enabled(PWM_IRQ_WRAP, false);
- 
-    // Return to off state
-    pio_sm_put(pio0, sm, stop2free);
- 
-    //Turn off pio
-    pio_sm_set_enabled(pio0, sm, false);
-    
-    return;
-}
-
-
-// Split into seperate functions
 void run_pulse(uint16_t pulseCycles) {
-    uint32_t setpoint;
-    float measurement; // ADC in
-    const float conversion_factor = 3.3f / (1 << 12); // Converts ADC signal to voltage
-    const float scale_factor = 50.0f; // Scales ADC result to -100 - 100 range
 
-    // Loads freewheeling state as first PWM pulse
-    // TODO: why is this here?
+    // Loads freewheeling as first PWM pulse
     delay = 250;
     nextState = (stop2free << 24) | (( delay << 8) | free2stop);
 
-
-    // Sets up PID
-    // PID Definitions (TODO: Figure out if I want this here or in header)
-    #define PID_KP 1.0f
-    #define PID_KI 1.0f
-    #define PID_KD 1.0f
-
-    #define PID_LIM_MIN 0.0f
-    #define PID_LIM_MAX 200.0f
-    
-    #define PID_LIM_MIN_INT 0.0f
-    #define PID_LIM_MAX_INT 100.0f
-
-    #define SAMPLE_TIME_S 0.00002 // 20 us
-
-    pid_controller pid = {  PID_KP, PID_KI, PID_KD,
-                            PID_LIM_MIN, PID_LIM_MAX,
-			                PID_LIM_MIN_INT, PID_LIM_MAX_INT,
-                            SAMPLE_TIME_S };
-
-    pid_controller_init(&pid);
-
     // Start PWM
     pwm_set_enabled(0, true);
+    //busy_wait_ms(10);
 
     // Pulse Loop
     for (uint16_t cycle = 0; cycle <= pulseCycles; cycle++) {
-        setpoint = block[cycle];
-
-        measurement = (adc_read() * conversion_factor * scale_factor); // NOTE: ADC sample comes under 20us earlier than pio output (0-200)
-        adc_block[cycle + 5] = measurement + 100;
-
-        // PID Control
-        pid_controller_update(&pid, (float)setpoint, measurement);
-
-        // Loads PID modilated waveform to return array 
-        pio_block[cycle + 5] = setpoint; //(uint32_t)(pid.out);
-
-        //printf("\nSP: %u, ADC: %f, PID: %u", setpoint, measurement, pio_block[cycle+5]);
-
-        while (true) {
-            if (pwm_flag == 1) {target = pio_block[cycle + 5]; pwm_flag = 0; break;}
-        }
+        sleep_ms(1);
+        target = cycle; // Sets the target variable which is pulled by the PWM function
     }
-
-    pwm_set_enabled(0, false);
 
     return;
 }
 
 
-/* Continually scans for input. Does not terminate until 
-an input block is received*/
-void scan_for_input() {
-    char in;
-    state = AWAIT_HEADER;
-
-    while ( true ) {
-        scanf("%c", &in);
-
-        switch (state) {
-            case AWAIT_HEADER:
-                if (in == 0x55) {
-                    state = AWAIT_SYNC;
-                }
-                break;
-            
-            case AWAIT_SYNC:
-                if (in == 0x3C) {
-                    state = BLOCK_FOUND;
-                    return;
-                }
-            default:
-                break;
-        }
-    }
-}
-
-
-/*Initializes all nescessary memory arrays with sizes defined at runtime*/
-void mem_init(uint16_t block_length) {
-    block = (unsigned char*)malloc(block_length * sizeof(unsigned char));
-    pio_block = (uint32_t*)malloc((block_length + 7) * sizeof(uint32_t)); // TODO: remember to change this once return_block() is reworked
-    adc_block = (uint16_t*)malloc((block_length + 7) * sizeof(uint16_t));
-}
-
-
-
-/*Once a block is detected by scan_for_input(), classifies and
-collects the rest of the block*/
-// TODO: Rewrite me to use terminator stuff!!
-uint16_t get_block(){
-    char c_in;
-    
-    char block_length1;
-    char block_length2;
-    uint16_t block_length_uint;
-
-    char sw_state; // for manual switch control
-
-    #define TRAILER 0x55
-    #define DATA_BLOCK_LENGTH 256
-
-    // checksum
-    uint8_t cs = 0; // calculated checksum
-    char cs_received; // recieved checksum
-
-    char trailer_received;
-
-    state = GETTING_BLOCK;
-
-    // clears block TODO: make sure this works
-    for (int i = 0; i < block_length_uint; i++) {
-        block[i] = '\0';
-    }
-
-
-    scanf("%c", &block_type);
-        
-    switch (block_type) {
-        case DATA:
-            scanf("%c", &block_length1);
-            scanf("%c", &block_length2);
-
-            int block_length = (block_length2 << 8) | block_length1;
-            block_length_uint = (uint16_t)block_length;
-
-            mem_init(block_length_uint);
-
-            // Sequentially reads all data bytes and loads them into block
-            for (uint16_t block_index = 0; block_index < block_length; block_index++) { //Rewrite me to use trailer byte once that is better implimented
-                scanf("%c", &c_in);
-
-                block[block_index] = c_in;
-
-                // checksum
-                cs += c_in;
-            }
-
-            // verify checksum
-            scanf("%c", &cs_received);
-            if (cs != cs_received) {
-                // TODO Error handling
-                printf("CHECKSUM ERROR");
-            }
-
-            // trailer
-            scanf("%c", &trailer_received);
-            if (trailer_received != TRAILER) {
-                printf("\nyou should never get here");
-            }
-
-            break;
-        
-        case MANUAL: // NOTE: at this point, using manual breaks everything :(
-                     // TODO: make that... not the case
-
-            printf("in manual mode\n");
-            
-            // Initializes pins as direct outputs (may break pulses, not sure)
-            gpio_init(10);
-            gpio_set_dir(10, GPIO_OUT);
-            gpio_init(11);
-            gpio_set_dir(11, GPIO_OUT);
-            gpio_init(12);
-            gpio_set_dir(12, GPIO_OUT);
-            gpio_init(13);
-            gpio_set_dir(13, GPIO_OUT);
-
-            for(int i=0; i<4; i++) {
-                scanf("%c", &sw_state);
-
-                gpio_put(i+10, (bool)sw_state);
-            }
-
-            return 0;
-
-        default:
-            // handle this better
-            printf("TYPE ERROR");
-            break;
-    }
-
-
-    return block_length_uint;
-}
-
-
-void build_return_pio(uint16_t block_length) { // for some reason a general return func doesn't work as well TODO: figure out why
-
-    // Return GPIO Block
-    // Build GPIO Block
-    pio_block[0] = 0x55;                                             // Head
-    pio_block[1] = 0x3C;                                             // Sync
-    pio_block[2] = 0x02;                                             // Block Type (GPIO Result)
-    pio_block[3] = 0x00;                                             // Data Length First Byte
-    pio_block[4] = 0x00;                                             // Data Length Second Byte
-   
-    // [GPIO Data]
-   
-    pio_block[block_length+1] = (uint32_t)pio_block_cs;              // Checksum
-    pio_block[block_length+2] = 0x55;                                // Trailer
-}
-
-
-void send_pio(uint16_t block_length) {
-    for (int i=0; i < (block_length + 7); i++) {
-        printf("\nRX: %u", pio_block[i]);
-    }
-}
-
-
-void build_return_adc(uint16_t block_length) {
-
-    // Return GPIO Block
-    // Build GPIO Block
-    adc_block[0] = 0x55;                                             // Head
-    adc_block[1] = 0x3C;                                             // Sync
-    adc_block[2] = 0x03;                                             // Block Type (ADC Result)
-    adc_block[3] = 0x00;                                             // Data Length First Byte
-    adc_block[4] = 0x00;                                             // Data Length Second Byte
-   
-    // [GPIO Data]
-   
-    adc_block[block_length+1] = (uint32_t)pio_block_cs;              // Checksum
-    adc_block[block_length+2] = 0x55;                                // Trailer
-}
-
-
-void send_adc(uint16_t block_length) {
-    for (int i=0; i < (block_length + 7); i++) {
-        printf("\nRX: %u", adc_block[i]);
-    }
-}
-
-
-
-int main() { //TODO: Rewrite so that command pulses are possible (enable/disable pid, etc.)
+int main() {
     // Status indicator
     const uint LED_PIN = 25;
 
@@ -516,34 +166,16 @@ int main() { //TODO: Rewrite so that command pulses are possible (enable/disable
     gpio_put(LED_PIN, 1);
 
 
-    uint16_t numCycles;
-
+    // Initializations
+    // Initialize Serial Libraries (USB)
     stdio_init_all();
+
+    // Initialize PWM and PIO
     init_pulse();
 
-    // Loops pulses for new inputs
-    while (true) {
+    // Runs pulse
+    run_pulse(199);
 
-        scan_for_input();
-
-        numCycles = get_block();
-
-        if (numCycles==0) {
-            continue;
-        }
-
-        sleep_ms(5000); // Needed to allow serial communication to complete without interfearing with FIFO buffers
-        
-        run_pulse(numCycles);
-
-        build_return_pio(numCycles);
-        send_pio(numCycles);
-        sleep_ms(10);
-        build_return_adc(numCycles);
-        send_adc(numCycles);
-    }
-
-    shutdown_pulse();
 
     return 0;
 }
