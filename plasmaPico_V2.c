@@ -1,10 +1,13 @@
 #include <stdio.h>
+#include <string.h>
 #include "pico/stdlib.h"
 #include "pico/time.h"
 #include "hardware/pio.h"
 #include "hardware/pwm.h"
 #include "hardware/clocks.h"
 #include "hardware/adc.h"
+#include "hardware/uart.h"
+#include "hardware/gpio.h"
 
 #include "pinsToggle.pio.h"
 
@@ -30,15 +33,134 @@ uint32_t __not_in_flash("pwm") nextState, cycleCount;
 uint32_t __not_in_flash("pwm") delay;
 uint32_t __not_in_flash("pwm") target;
 
-
-// Number of PIO State Machine
+// The Number of the PIO State Machine
 uint __not_in_flash("pwm") sm;
 
-// Array of Pulse Lengths
-unsigned char* pulseDelays;
-uint16_t __not_in_flash("pwm") pulseDelays_length_uint;
+
+// Status LED Initialization
+#define LED_PIN 25 // Onboard LED
+
+void init_led() {
+    gpio_init(LED_PIN);
+    gpio_set_dir(LED_PIN, GPIO_OUT);
+}
+
+typedef enum {
+    STATE_WAITING_USB,    // Blink slow (waiting for USB connection)
+    STATE_IDLE,           // LED off (no activity)
+    STATE_RECEIVING,      // Blink fast (receiving data)
+    STATE_DATA_READY,     // Double-blink (full buffer received)
+    STATE_OUTPUT_PULSE    // LED on
+} SystemState;
+
+static SystemState current_state = STATE_WAITING_USB;
 
 
+// === Serial Configuration ===
+// Uncomment ONE of these to choose the interface:
+#define USE_USB_CDC   // Use USB serial (e.g., /dev/ttyACM0)
+//#define USE_UART      // Use hardware UART (GPIO pins)
+
+#ifdef USE_UART
+#define UART_ID uart0
+#define BAUD_RATE 115200
+#define UART_TX_PIN 0 // Change depending on GPIO configuration
+#define UART_RX_PIN 1 // ^
+#endif
+
+// Serial Protocol Constants
+#define START_BYTE 0xAA
+#define END_BYTE 0x55
+#define MAX_PULSES 255 // Max pulses per packet - ensure agreement with the transmitter
+
+// Recieved pulse buffer
+uint8_t pulse_buffer[MAX_PULSES];
+uint16_t __not_in_flash("pwm") recieved_pulses = 0;
+
+
+// === Hardware-Agnostic Serial Helpers ===
+void init_serial() {
+    #ifdef USE_USB_CDC
+    stdio_init_all(); // Initializes USB CDC
+    #elif defined(USE_UART)
+    uart_init(UART_ID, BAUD_RATE);
+    gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
+    gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
+    #endif
+}
+
+bool serial_connected() {
+    #ifdef USE_USB_CDC
+    return stdio_usb_connected();
+    #elif defined(USE_UART)
+    return true; // UART is always "connected"
+    #endif
+
+}
+
+int read_serial_byte() {
+    #ifdef USE_USB_CDC
+    return getchar_timeout_us(0); // Non-blocking USB read
+    #elif defined(USE_UART)
+    return uart_is_readable(UART_ID) ? uart_getc(UART_ID) : PICO_ERROR_TIMEOUT; // Non-blocking UART read, returns -1 if no data
+    #endif
+}
+
+
+// Serial Protocol Input Parser
+void serial_input() {
+    static enum { WAIT_START, WAIT_LENGTH, WAIT_DATA, WAIT_CHECKSUM, WAIT_END } state = WAIT_START;
+    static uint8_t expected_length = 0;
+    static uint8_t checksum = 0;
+    static uint16_t data_index = 0;
+
+    int byte;
+    while ((byte = read_serial_byte()) != PICO_ERROR_TIMEOUT) {
+        switch (state) {
+            case WAIT_START:
+                if (byte == START_BYTE) {
+                    checksum = START_BYTE;
+                    state = WAIT_LENGTH;
+                }
+                break;
+            
+            case WAIT_LENGTH:
+                expected_length = byte;
+                checksum ^= byte;
+                data_index = 0;
+                state = (expected_length > 0) ? WAIT_DATA : WAIT_CHECKSUM;
+                break;
+
+            case WAIT_DATA:
+                if (data_index < MAX_PULSES) {
+                    pulse_buffer[data_index++] = byte;
+                    checksum ^= byte;
+                }
+                if (data_index >= expected_length) {
+                    state = WAIT_CHECKSUM;
+                }
+                break;
+
+            case WAIT_CHECKSUM:
+                if (checksum == byte) {
+                    state == WAIT_END;
+                } else {
+                    state = WAIT_START; // Reset on checksum error TODO: function to report error
+                }
+                break;
+
+            case WAIT_END:
+                if (byte == END_BYTE) {
+                    recieved_pulses = expected_length;
+                    printf("Recieved %d pulses\n", recieved_pulses); // Disable this if not testing TODO: Add compile time testing flags
+                }
+                state = WAIT_START; // Reset
+                break;
+        }
+    }
+}
+
+// Pulse Functions
 void __time_critical_func(on_pwm_wrap)() {
     /*
     Runs
@@ -171,17 +293,20 @@ void run_pulse(uint16_t pulseCycles) {
 
 int main() {
     // Status indicator
-    const uint LED_PIN = 25;
-
     gpio_init(LED_PIN);
     gpio_set_dir(LED_PIN, GPIO_OUT);
 
     gpio_put(LED_PIN, 1);
 
 
-    // Initializations
-    // Initialize Serial Libraries (USB)
-    stdio_init_all();
+    // Initialize Serial Configuration
+    init_serial();
+
+    // #ifdef USE_USB_CDC
+    // while (!serial_connected()) {
+    //     sleep_ms(100); // Wait for USB connection
+    // }
+    // #endif
 
     // Initialize PWM and PIO
     init_pulse();
