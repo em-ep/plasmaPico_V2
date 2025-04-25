@@ -37,7 +37,7 @@ uint32_t __not_in_flash("pwm") target;
 uint __not_in_flash("pwm") sm;
 
 
-// Status LED Initialization
+// === Status LED Initialization ===
 #define LED_PIN 25 // Onboard LED
 
 void init_led() {
@@ -54,6 +54,55 @@ typedef enum {
 } SystemState;
 
 static SystemState current_state = STATE_WAITING_USB;
+
+uint64_t last_led_update = 0;
+bool led_on = false;
+
+void update_led() {
+    uint64_t now = time_us_64() / 1000; // Current time in milliseconds
+
+    switch (current_state) {
+        case STATE_WAITING_USB:
+            // Short blink, long pause (100ms on, 900ms off)
+            if (now - last_led_update >= (led_on ? 100 : 900)) {
+                led_on = !led_on;
+                gpio_put(LED_PIN, led_on);
+                last_led_update = now;
+            }
+            break;
+
+        case STATE_RECEIVING:
+            // Rapid flicker (50ms on/off)
+            if (now - last_led_update >= 50) {
+                led_on = !led_on;
+                gpio_put(LED_PIN, led_on);
+                last_led_update = now;
+            }
+            break;
+        
+        case STATE_DATA_READY:
+            // Double-blink, pause (100ms on, 100ms off, 100ms on, 700ms off)
+            static uint8_t blink_phase = 0;
+            if (now - last_led_update >=
+                (blink_phase == 0 ? 100 :
+                 blink_phase == 1 ? 100 : 
+                 blink_phase == 2 ? 100 : 700)) {
+                    
+                gpio_put(LED_PIN, (blink_phase % 2 == 0));
+                blink_phase = (blink_phase + 1) % 4;
+                last_led_update = now;
+            }
+            break;
+
+        case STATE_IDLE:
+            gpio_put(LED_PIN, 0); // LED off
+            break;
+
+        case STATE_OUTPUT_PULSE:
+            gpio_put(LED_PIN, 1); // LED on
+            break;
+    }
+}
 
 
 // === Serial Configuration ===
@@ -79,23 +128,30 @@ uint16_t __not_in_flash("pwm") recieved_pulses = 0;
 
 
 // === Hardware-Agnostic Serial Helpers ===
-void init_serial() {
-    #ifdef USE_USB_CDC
-    stdio_init_all(); // Initializes USB CDC
-    #elif defined(USE_UART)
-    uart_init(UART_ID, BAUD_RATE);
-    gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
-    gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
-    #endif
-}
-
 bool serial_connected() {
     #ifdef USE_USB_CDC
     return stdio_usb_connected();
     #elif defined(USE_UART)
     return true; // UART is always "connected"
     #endif
+}
 
+void init_serial() {
+    #ifdef USE_USB_CDC
+    stdio_init_all(); // Initializes USB CDC
+    current_state = STATE_WAITING_USB;
+    while (!serial_connected()) {
+        update_led();
+        sleep_ms(10); // Wait for USB connection
+    }
+
+    #elif defined(USE_UART)
+    uart_init(UART_ID, BAUD_RATE);
+    gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
+    gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
+    #endif
+
+    current_state = STATE_IDLE; // Connected, now idle
 }
 
 int read_serial_byte() {
@@ -121,6 +177,8 @@ void serial_input() {
                 if (byte == START_BYTE) {
                     checksum = START_BYTE;
                     state = WAIT_LENGTH;
+
+                    current_state = STATE_RECEIVING; // Data incoming
                 }
                 break;
             
@@ -153,6 +211,8 @@ void serial_input() {
                 if (byte == END_BYTE) {
                     recieved_pulses = expected_length;
                     printf("Recieved %d pulses\n", recieved_pulses); // Disable this if not testing TODO: Add compile time testing flags
+
+                    current_state = STATE_DATA_READY;
                 }
                 state = WAIT_START; // Reset
                 break;
@@ -302,14 +362,10 @@ int main() {
     // Initialize Serial Configuration
     init_serial();
 
-    // #ifdef USE_USB_CDC
-    // while (!serial_connected()) {
-    //     sleep_ms(100); // Wait for USB connection
-    // }
-    // #endif
 
     // Initialize PWM and PIO
     init_pulse();
+
 
     // Runs pulse and then turns off PWM and PIO sm
     run_pulse(199);
