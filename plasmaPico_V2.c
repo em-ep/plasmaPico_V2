@@ -11,11 +11,6 @@
 
 #include "pinsToggle.pio.h"
 
-// NOTE:
-// Pulse: a single PWM pulse
-// CUTE_Pulse: a 200ms tokamak pulse
-// I'm trying not to use the same language for both, but as of now it's still inconsistent and context-based
-
 
 // Declare System Variables
 // Pin "Addresses"
@@ -50,7 +45,7 @@ typedef enum {
     STATE_IDLE,           // LED off (no activity)
     STATE_RECEIVING,      // Blink fast (receiving data)
     STATE_DATA_READY,     // Double-blink (full buffer received)
-    STATE_OUTPUT_PULSE    // LED on
+    STATE_OUTPUT_SHOT     // LED on
 } SystemState;
 
 static SystemState current_state = STATE_WAITING_USB;
@@ -98,7 +93,7 @@ void update_led() {
             gpio_put(LED_PIN, 0); // LED off
             break;
 
-        case STATE_OUTPUT_PULSE:
+        case STATE_OUTPUT_SHOT:
             gpio_put(LED_PIN, 1); // LED on
             break;
     }
@@ -120,7 +115,15 @@ void update_led() {
 // Serial Protocol Constants
 #define START_BYTE 0xAA
 #define END_BYTE 0x55
-#define MAX_PULSES 255 // Max pulses per packet - ensure agreement with the transmitter
+#define MAX_PULSES 16383 // Max pulses per packet - ensure agreement with the transmitter
+
+// Type Bytes
+typedef enum {
+    MSG_PWM = 0x01,
+    MSG_MANUAL = 0x02,
+    MSG_CONFIG = 0x03
+} MessageType;
+MessageType current_msg_type;
 
 // Recieved pulse buffer
 uint8_t pulse_buffer[MAX_PULSES];
@@ -165,7 +168,14 @@ int read_serial_byte() {
 
 // Serial Protocol Input Parser
 void serial_input() {
-    static enum { WAIT_START, WAIT_LENGTH, WAIT_DATA, WAIT_CHECKSUM, WAIT_END } state = WAIT_START;
+    /*
+    Parses incoming serial data (UART or USB) of the following protocol:
+    [START_BYTE][TYPE][LENGTH][DATA...][CHECKSUM][END_BYTE]
+    
+    Start/End: 0xAA/0x55
+    Types: 0x01 (PWM), 0x02 (Manual Mode), 0x03 (Config)
+    */
+    static enum { WAIT_START, WAIT_LENGTH, WAIT_TYPE, WAIT_DATA, WAIT_CHECKSUM, WAIT_END } state = WAIT_START;
     static uint8_t expected_length = 0;
     static uint8_t checksum = 0;
     static uint16_t data_index = 0;
@@ -181,6 +191,17 @@ void serial_input() {
                     current_state = STATE_RECEIVING; // Data incoming
                 }
                 break;
+
+            case WAIT_TYPE:
+                if (byte >= 0x01 && byte <= 0x03) {
+                    current_msg_type = (MessageType)byte;
+                    checksum ^= byte;
+                    state = WAIT_LENGTH;
+                } else {
+                    state = WAIT_START; // Reset on invalid type TODO: determine if we want to throw an error flag
+                }
+                break;
+
             
             case WAIT_LENGTH:
                 expected_length = byte;
@@ -259,9 +280,9 @@ void __time_critical_func(on_pwm_wrap)() {
 }
 
 
-void init_pulse() {
+void init_shot() {
     /*
-    Runs initialization for pulse output:
+    Runs initialization for shot pulse output:
         Computes output state definitions
         Sets up PIO
         Sets up PWM wrapping
@@ -318,9 +339,9 @@ void init_pulse() {
 }
 
 
-void run_pulse(uint16_t pulseCycles) {
+void run_shot(uint16_t pulseCycles) {
     /*
-    Runs pulse and then turns off PWM and PIO sm
+    Runs shot pulses and then turns off PWM and PIO sm
     */
 
     // Loads freewheeling as first PWM pulse
@@ -364,11 +385,11 @@ int main() {
 
 
     // Initialize PWM and PIO
-    init_pulse();
+    init_shot();
 
 
     // Runs pulse and then turns off PWM and PIO sm
-    run_pulse(199);
+    run_shot(199);
 
 
     return 0;
