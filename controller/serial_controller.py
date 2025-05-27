@@ -22,7 +22,7 @@ class SerialController:
 
     START_BYTE = 0xAA
     END_BYTE = 0x55
-    MAX_PULSES = 16383 # Max pulses per packet - ensure agreement with the transmitter
+    MAX_PULSES = 16000 # Max pulses per packet - ensure agreement with the transmitter
 
     def __init__(self, port: str, baudrate: int = 115200, timeout: float = 1.0):
         """
@@ -92,20 +92,11 @@ class SerialController:
     
     def send_configuration(self, param_id: int, value: int):
         """
-        Send configuration data to the microcontroller.
-        
-        Args:
-            param_id: Configuration parameter ID
-            value: Value to set (0-65535)
+        Not yet implimented
         """
 
-        # Split 16-bit value into two bytes (little-endian)
-        value_bytes = [value & 0xFF, (value >> 8) & 0xFF]
-        packet = self.build_packet(MessageType.CONFIGURATION, [param_id] + value_bytes)
-        self.ser.write(packet)
 
 
-        print(f"Sent config: param={param_id}, value={value}")
 
 if __name__ == "__main__":
     try:
@@ -115,5 +106,5 @@ if __name__ == "__main__":
     except serial.SerialException as e:
         print(f"Serial error: {e}")
 
-    finally:
-        controller.close()
+
+controller.close()

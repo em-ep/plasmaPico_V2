@@ -18,6 +18,7 @@ uint32_t S4 = 0x00000008; // 1000
 uint32_t S3 = 0x00000004; // 0100
 uint32_t S2 = 0x00000002; // 0010
 uint32_t S1 = 0x00000001; // 0001
+static const uint startPin = 10; // S1 output pin. Rest are assigned sequentially
 
 // Pulse States
 uint32_t __not_in_flash("pwm") stop2free, free2stop, free2poss, free2neg, poss2free, neg2free;
@@ -115,9 +116,9 @@ void update_led() {
 // Serial Protocol Constants
 #define START_BYTE 0xAA
 #define END_BYTE 0x55
-#define MAX_PULSES 16383 // Max pulses per packet - ensure agreement with the transmitter
+#define MAX_PULSES 16000 // Max pulses per packet - ensure agreement with the transmitter
 
-// Type Bytes
+// Message Bytes
 typedef enum {
     MSG_PWM = 0x01,
     MSG_MANUAL = 0x02,
@@ -126,7 +127,8 @@ typedef enum {
 MessageType current_msg_type;
 
 // Recieved pulse buffer
-uint8_t pulse_buffer[MAX_PULSES];
+uint8_t rx_buffer[MAX_PULSES + 5];
+uint8_t __not_in_flash("pwm") pulse_buffer[MAX_PULSES];
 uint16_t __not_in_flash("pwm") recieved_pulses = 0;
 
 
@@ -166,6 +168,45 @@ int read_serial_byte() {
 }
 
 
+// Serial input helper function
+void handle_message() {
+    /*
+    Handles the completed input buffer depending upon the message type as described below:
+
+    MSG_PWM: Loads the pulse data from rx_buffer into its own array
+    MSG_MANUAL: Parses and applies manual switch configuration using helper function
+    MSG_CONFIG: Parses and sets new configuration
+    */
+
+    int switchState[4];
+
+    switch (current_msg_type) {
+
+        case MSG_PWM:
+            // Copies data from rx_buffer into pulse_buffer
+            memcpy(pulse_buffer, rx_buffer, MAX_PULSES);
+        break; // Upon break, goes back to main function and waits to run pulse
+
+        case MSG_MANUAL:
+            // Gets the switch configurations from rx_buffer and applies them to the output pins
+            for (int i = 0; i < 5; i++) {
+                gpio_put(startPin + i, rx_buffer[3+i]); // Toggles switches 1 through 4 according to the manual configuration loaded into rx_buffer. Requires 0s or 1s.
+            }
+        break;
+
+        case MSG_CONFIG:
+            // Not yet implimented
+        break;
+
+    
+    default:
+        printf("Unknown message type 0x%02X\n", current_msg_type);
+    }
+    
+    return;
+}
+
+
 // Serial Protocol Input Parser
 void serial_input() {
     /*
@@ -188,17 +229,17 @@ void serial_input() {
                     checksum = START_BYTE;
                     state = WAIT_LENGTH;
 
-                    current_state = STATE_RECEIVING; // Data incoming
+                    current_state = STATE_RECEIVING; // LED indicator data incoming
                 }
                 break;
 
             case WAIT_TYPE:
-                if (byte >= 0x01 && byte <= 0x03) {
+                if (byte == MSG_PWM || byte == MSG_MANUAL || byte == MSG_CONFIG) {
                     current_msg_type = (MessageType)byte;
                     checksum ^= byte;
                     state = WAIT_LENGTH;
                 } else {
-                    state = WAIT_START; // Reset on invalid type TODO: determine if we want to throw an error flag
+                    state = WAIT_START; // Reset on invalid type TODO: determine if we want to throw an error flag TODO: make sure this doesn't break the LED indicator
                 }
                 break;
 
@@ -212,7 +253,7 @@ void serial_input() {
 
             case WAIT_DATA:
                 if (data_index < MAX_PULSES) {
-                    pulse_buffer[data_index++] = byte;
+                    rx_buffer[data_index++] = byte;
                     checksum ^= byte;
                 }
                 if (data_index >= expected_length) {
@@ -224,7 +265,7 @@ void serial_input() {
                 if (checksum == byte) {
                     state == WAIT_END;
                 } else {
-                    state = WAIT_START; // Reset on checksum error TODO: function to report error
+                    state = WAIT_START; // Reset on checksum error TODO: function to report error TODO: make sure that everything clears properly on reset
                 }
                 break;
 
@@ -234,12 +275,15 @@ void serial_input() {
                     printf("Recieved %d pulses\n", recieved_pulses); // Disable this if not testing TODO: Add compile time testing flags
 
                     current_state = STATE_DATA_READY;
+
+                    handle_message(); // Processes complete packet depending upon its instruction type
                 }
                 state = WAIT_START; // Reset
-                break;
+                return;
         }
     }
 }
+
 
 // Pulse Functions
 void __time_critical_func(on_pwm_wrap)() {
@@ -287,8 +331,6 @@ void init_shot() {
         Sets up PIO
         Sets up PWM wrapping
     */
-    static const uint startPin = 10;
-
     set_sys_clock_khz(125000, true); //125000
 
 
@@ -341,7 +383,7 @@ void init_shot() {
 
 void run_shot(uint16_t pulseCycles) {
     /*
-    Runs shot pulses and then turns off PWM and PIO sm
+    Runs shot pulses
     */
 
     // Loads freewheeling as first PWM pulse
@@ -353,10 +395,20 @@ void run_shot(uint16_t pulseCycles) {
     //busy_wait_ms(10);
 
     // Pulse Loop
-    for (uint16_t cycle = 0; cycle <= pulseCycles; cycle++) {
+    for (uint16_t cycle = 0; cycle < pulseCycles; cycle++) {
         sleep_ms(1);
-        target = cycle; // Sets the target variable which is pulled by the PWM function
+        target = pulse_buffer[cycle]; // Sets the target variable which is pulled by the PWM function
     }
+
+
+    return;
+}
+
+
+void shutdown_shot() {
+    /*
+    Turns off PWM and PIO
+    */
 
     // Turn off PWM
     pwm_set_enabled(0, false);
@@ -373,11 +425,8 @@ void run_shot(uint16_t pulseCycles) {
 
 
 int main() {
-    // Status indicator
-    gpio_init(LED_PIN);
-    gpio_set_dir(LED_PIN, GPIO_OUT);
-
-    gpio_put(LED_PIN, 1);
+    // Initializes Status Indicator LED
+    init_led();
 
 
     // Initialize Serial Configuration
@@ -388,8 +437,17 @@ int main() {
     init_shot();
 
 
-    // Runs pulse and then turns off PWM and PIO sm
-    run_shot(199);
+    while (true) {
+        // Waits for next serial instruction input and loads it
+        serial_input();
+
+        if (current_msg_type == MSG_PWM) {
+            run_shot(MAX_PULSES);
+        }
+
+        shutdown_shot();
+
+    }
 
 
     return 0;
