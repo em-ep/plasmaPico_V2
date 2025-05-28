@@ -243,7 +243,7 @@ void serial_input() {
             case WAIT_START:
                 if (byte == START_BYTE) {
                     checksum = START_BYTE;
-                    ser_state = WAIT_LENGTH;
+                    ser_state = WAIT_TYPE;
 
                     current_state = STATE_RECEIVING; // LED indicator data incoming
                 }
@@ -266,11 +266,11 @@ void serial_input() {
                 data_index = 0;
                 ser_state = (expected_length > 0) ? WAIT_DATA : WAIT_CHECKSUM;
 
-                rx_buffer = (uint8_t*)malloc(expected_length * sizeof(uint8_t)); // Dynamically defines rx_buffer
+                rx_buffer = (uint8_t*)calloc(sizeof(uint8_t), expected_length * sizeof(uint8_t)); // Dynamically defines rx_buffer
                 break;
 
             case WAIT_DATA:
-                if (data_index < MAX_PULSES) {
+                if (data_index < expected_length) {
                     rx_buffer[data_index++] = byte;
                     checksum ^= byte;
                 }
@@ -281,7 +281,7 @@ void serial_input() {
 
             case WAIT_CHECKSUM:
                 if (checksum == byte) {
-                    ser_state == WAIT_END;
+                    ser_state = WAIT_END;
                 } else {
                     ser_state = WAIT_START; // Reset on checksum error TODO: function to report error TODO: make sure that everything clears properly on reset
                 }
@@ -298,6 +298,7 @@ void serial_input() {
                 ser_state = WAIT_START; // Reset
                 return;
         }
+        sleep_ms(1);
     }
 }
 
@@ -455,12 +456,13 @@ int main() {
     // Initialize PWM and PIO
     init_shot();
 
+    LOG_INFO("before serial_input");
+
     // Waits for next serial instruction input and loads it
-    serial_input();
+    while (current_state != STATE_DATA_READY) {serial_input();}
 
-    sleep_ms(500);
 
-    LOG_INFO("here");
+    LOG_INFO("after serial_input");
 
     // prints rx_buffer
     for (int i=0; i<200; i++) {

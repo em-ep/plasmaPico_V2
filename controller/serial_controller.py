@@ -109,10 +109,11 @@ print(controller.ser.readline())
 print(controller.ser.readline())
 print(controller.ser.readline())
 
+print("sending now")
 controller.send_pwm_pulses(pulseList)
 
-# while True:
-#     print(controller.ser.readline())
+while True:
+    print(controller.ser.readline())
 
 time.sleep(10)
 
