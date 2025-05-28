@@ -1,7 +1,9 @@
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include "pico/stdlib.h"
 #include "pico/time.h"
+#include "pico/malloc.h"
 #include "hardware/pio.h"
 #include "hardware/pwm.h"
 #include "hardware/clocks.h"
@@ -10,6 +12,7 @@
 #include "hardware/gpio.h"
 
 #include "pinsToggle.pio.h"
+#include "debug.h"
 
 
 // Declare System Variables
@@ -127,9 +130,9 @@ typedef enum {
 MessageType current_msg_type;
 
 // Recieved pulse buffer
-uint8_t rx_buffer[MAX_PULSES + 5];
-uint8_t __not_in_flash("pwm") pulse_buffer[MAX_PULSES];
-uint16_t __not_in_flash("pwm") recieved_pulses = 0;
+uint8_t* rx_buffer;
+uint8_t *pulse_buffer = NULL;
+uint16_t num_pulses = 0;
 
 
 // === Hardware-Agnostic Serial Helpers ===
@@ -183,9 +186,8 @@ void handle_message() {
     switch (current_msg_type) {
 
         case MSG_PWM:
-            // Copies data from rx_buffer into pulse_buffer
-            memcpy(pulse_buffer, rx_buffer, MAX_PULSES);
-        break; // Upon break, goes back to main function and waits to run pulse
+        pulse_buffer = rx_buffer;
+        break;
 
         case MSG_MANUAL:
             // Gets the switch configurations from rx_buffer and applies them to the output pins
@@ -249,6 +251,8 @@ void serial_input() {
                 checksum ^= byte;
                 data_index = 0;
                 state = (expected_length > 0) ? WAIT_DATA : WAIT_CHECKSUM;
+
+                rx_buffer = (uint8_t*)malloc(expected_length * sizeof(uint8_t)); // Dynamically defines rx_buffer
                 break;
 
             case WAIT_DATA:
@@ -271,8 +275,8 @@ void serial_input() {
 
             case WAIT_END:
                 if (byte == END_BYTE) {
-                    recieved_pulses = expected_length;
-                    printf("Recieved %d pulses\n", recieved_pulses); // Disable this if not testing TODO: Add compile time testing flags
+                    num_pulses = expected_length;
+                    printf("Recieved %d pulses\n", num_pulses); // Disable this if not testing TODO: Add compile time testing flags
 
                     current_state = STATE_DATA_READY;
 
@@ -432,6 +436,8 @@ int main() {
     // Initialize Serial Configuration
     init_serial();
 
+    LOG_INFO("init_serial successful");
+
 
     // Initialize PWM and PIO
     init_shot();
@@ -442,7 +448,7 @@ int main() {
         serial_input();
 
         if (current_msg_type == MSG_PWM) {
-            run_shot(MAX_PULSES);
+            run_shot(num_pulses);
         }
 
         shutdown_shot();

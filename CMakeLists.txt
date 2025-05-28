@@ -34,7 +34,6 @@ project(plasmaPico_V2 C CXX ASM)
 pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
-
 add_executable(plasmaPico_V2 plasmaPico_V2.c )
 
 pico_set_program_name(plasmaPico_V2 "plasmaPico_V2")
@@ -59,6 +58,15 @@ pico_generate_pio_header(${PROJECT_NAME}
 # Add the standard include files to the build
 target_include_directories(plasmaPico_V2 PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}
+)
+
+# Debugging
+# Set default debug level (0-4)
+set(DEBUG_LEVEL 4 CACHE STRING "Debug level (0=OFF, 1=ERROR, 2=WARN, 3=INFO, 4=DEBUG)")
+
+# Add to compiler definitions
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+    DEBUG_LEVEL=${DEBUG_LEVEL}
 )
 
 pico_add_extra_outputs(plasmaPico_V2)

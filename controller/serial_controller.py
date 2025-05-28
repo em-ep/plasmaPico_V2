@@ -95,16 +95,28 @@ class SerialController:
         Not yet implimented
         """
 
+controller = SerialController(port='COM3')
+
+pulseList = []
+
+for i in range(0, 200):
+    pulseList.append(i)
+
+controller.send_pwm_pulses(pulseList)
+
+while True:
+    print(controller.ser.readline())
+
+time.sleep(10)
 
 
+# if __name__ == "__main__":
+#     try:
+#         # Initialize controller (change port as needed)
+#         controller = SerialController(port='COM3')
 
-if __name__ == "__main__":
-    try:
-        # Initialize controller (change port as needed)
-        controller = SerialController(port='COM3')
-
-    except serial.SerialException as e:
-        print(f"Serial error: {e}")
+#     except serial.SerialException as e:
+#         print(f"Serial error: {e}")
 
 
 controller.close()
