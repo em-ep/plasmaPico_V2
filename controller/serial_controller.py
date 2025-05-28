@@ -24,11 +24,11 @@ class SerialController:
     END_BYTE = 0x55
     MAX_PULSES = 16000 # Max pulses per packet - ensure agreement with the transmitter
 
-    def __init__(self, port: str, baudrate: int = 115200, timeout: float = 1.0):
+    def __init__(self, port: str, baudrate: int = 9600, timeout: float = 1.0):
         """
         Initialize the serial connection
         """
-        self.ser = serial.Serial(port, baudrate=baudrate, timeout=timeout)
+        self.ser = serial.Serial(port, baudrate=baudrate, timeout=timeout, bytesize=8, parity='N', stopbits=1)
         time.sleep(2) # Waits for connection to establish TODO: add check here
 
     def close(self):
@@ -71,6 +71,9 @@ class SerialController:
             return -1
 
         packet = self.build_packet(MessageType.MSG_PWM, pulses)
+
+        #print(' '.join(f'{x:02x}' for x in packet))  
+
         self.ser.write(packet)
 
         print(f"Sent {len(pulses)} PWM pulses")
@@ -102,10 +105,14 @@ pulseList = []
 for i in range(0, 200):
     pulseList.append(i)
 
+print(controller.ser.readline())
+print(controller.ser.readline())
+print(controller.ser.readline())
+
 controller.send_pwm_pulses(pulseList)
 
-while True:
-    print(controller.ser.readline())
+# while True:
+#     print(controller.ser.readline())
 
 time.sleep(10)
 

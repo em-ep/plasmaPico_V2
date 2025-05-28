@@ -62,7 +62,7 @@ target_include_directories(plasmaPico_V2 PRIVATE
 
 # Debugging
 # Set default debug level (0-4)
-set(DEBUG_LEVEL 4 CACHE STRING "Debug level (0=OFF, 1=ERROR, 2=WARN, 3=INFO, 4=DEBUG)")
+#set(DEBUG_LEVEL 4 CACHE STRING "Debug level (0=OFF, 1=ERROR, 2=WARN, 3=INFO, 4=DEBUG)")
 
 # Add to compiler definitions
 target_compile_definitions(${PROJECT_NAME} PRIVATE

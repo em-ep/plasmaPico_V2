@@ -159,6 +159,7 @@ void init_serial() {
     gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
     #endif
 
+    LOG_INFO("Serial Connected!");
     current_state = STATE_IDLE; // Connected, now idle
 }
 
@@ -218,18 +219,31 @@ void serial_input() {
     Start/End: 0xAA/0x55
     Types: 0x01 (PWM), 0x02 (Manual Mode), 0x03 (Config)
     */
-    static enum { WAIT_START, WAIT_LENGTH, WAIT_TYPE, WAIT_DATA, WAIT_CHECKSUM, WAIT_END } state = WAIT_START;
+    static enum { WAIT_START, WAIT_LENGTH, WAIT_TYPE, WAIT_DATA, WAIT_CHECKSUM, WAIT_END } ser_state = WAIT_START;
+    
+    // For info logging
+    const char* ser_state_names[] = {
+    [WAIT_START] = "WAIT_START",
+    [WAIT_LENGTH] = "WAIT_LENGTH",
+    [WAIT_TYPE] = "WAIT_TYPE",
+    [WAIT_DATA] = "WAIT_DATA",
+    [WAIT_CHECKSUM] = "WAIT_CHECKSUM",
+    [WAIT_END] = "WAIT_END"
+    };
+
     static uint8_t expected_length = 0;
     static uint8_t checksum = 0;
     static uint16_t data_index = 0;
 
     int byte;
     while ((byte = read_serial_byte()) != PICO_ERROR_TIMEOUT) {
-        switch (state) {
+        LOG_INFO("ser_state = %s", ser_state_names[ser_state]);
+
+        switch (ser_state) {
             case WAIT_START:
                 if (byte == START_BYTE) {
                     checksum = START_BYTE;
-                    state = WAIT_LENGTH;
+                    ser_state = WAIT_LENGTH;
 
                     current_state = STATE_RECEIVING; // LED indicator data incoming
                 }
@@ -239,9 +253,9 @@ void serial_input() {
                 if (byte == MSG_PWM || byte == MSG_MANUAL || byte == MSG_CONFIG) {
                     current_msg_type = (MessageType)byte;
                     checksum ^= byte;
-                    state = WAIT_LENGTH;
+                    ser_state = WAIT_LENGTH;
                 } else {
-                    state = WAIT_START; // Reset on invalid type TODO: determine if we want to throw an error flag TODO: make sure this doesn't break the LED indicator
+                    ser_state = WAIT_START; // Reset on invalid type TODO: determine if we want to throw an error flag TODO: make sure this doesn't break the LED indicator
                 }
                 break;
 
@@ -250,7 +264,7 @@ void serial_input() {
                 expected_length = byte;
                 checksum ^= byte;
                 data_index = 0;
-                state = (expected_length > 0) ? WAIT_DATA : WAIT_CHECKSUM;
+                ser_state = (expected_length > 0) ? WAIT_DATA : WAIT_CHECKSUM;
 
                 rx_buffer = (uint8_t*)malloc(expected_length * sizeof(uint8_t)); // Dynamically defines rx_buffer
                 break;
@@ -261,28 +275,27 @@ void serial_input() {
                     checksum ^= byte;
                 }
                 if (data_index >= expected_length) {
-                    state = WAIT_CHECKSUM;
+                    ser_state = WAIT_CHECKSUM;
                 }
                 break;
 
             case WAIT_CHECKSUM:
                 if (checksum == byte) {
-                    state == WAIT_END;
+                    ser_state == WAIT_END;
                 } else {
-                    state = WAIT_START; // Reset on checksum error TODO: function to report error TODO: make sure that everything clears properly on reset
+                    ser_state = WAIT_START; // Reset on checksum error TODO: function to report error TODO: make sure that everything clears properly on reset
                 }
                 break;
 
             case WAIT_END:
                 if (byte == END_BYTE) {
                     num_pulses = expected_length;
-                    printf("Recieved %d pulses\n", num_pulses); // Disable this if not testing TODO: Add compile time testing flags
 
                     current_state = STATE_DATA_READY;
 
                     handle_message(); // Processes complete packet depending upon its instruction type
                 }
-                state = WAIT_START; // Reset
+                ser_state = WAIT_START; // Reset
                 return;
         }
     }
@@ -436,25 +449,36 @@ int main() {
     // Initialize Serial Configuration
     init_serial();
 
-    LOG_INFO("init_serial successful");
+    sleep_ms(500);
 
 
     // Initialize PWM and PIO
     init_shot();
 
+    // Waits for next serial instruction input and loads it
+    serial_input();
 
-    while (true) {
-        // Waits for next serial instruction input and loads it
-        serial_input();
+    sleep_ms(500);
 
-        if (current_msg_type == MSG_PWM) {
-            run_shot(num_pulses);
-        }
+    LOG_INFO("here");
 
-        shutdown_shot();
-
+    // prints rx_buffer
+    for (int i=0; i<200; i++) {
+        sleep_ms(10);
+        printf("%X  ", rx_buffer[i]);
     }
 
+    if (current_msg_type == MSG_PWM) {
+        run_shot(num_pulses);
+    }
+
+    shutdown_shot();
+
+    // put somwhere else later
+    free(rx_buffer);
+    rx_buffer = NULL;
+
+    LOG_INFO("end");
 
     return 0;
 }
