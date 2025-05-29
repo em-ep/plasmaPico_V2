@@ -106,7 +106,7 @@ void update_led() {
 
 // === Serial Configuration ===
 // Uncomment ONE of these to choose the interface:
-#define USE_USB_CDC   // Use USB serial (e.g., /dev/ttyACM0)
+#define USE_USB_CDC   // Use USB serial
 //#define USE_UART      // Use hardware UART (GPIO pins)
 
 #ifdef USE_UART
@@ -130,7 +130,7 @@ typedef enum {
 MessageType current_msg_type;
 
 // Recieved pulse buffer
-uint8_t* rx_buffer;
+uint8_t* rx_buffer = NULL;
 uint8_t *pulse_buffer = NULL;
 uint16_t num_pulses = 0;
 
@@ -172,7 +172,6 @@ int read_serial_byte() {
 }
 
 
-// Serial input helper function
 void handle_message() {
     /*
     Handles the completed input buffer depending upon the message type as described below:
@@ -193,7 +192,11 @@ void handle_message() {
         case MSG_MANUAL:
             // Gets the switch configurations from rx_buffer and applies them to the output pins
             for (int i = 0; i < 5; i++) {
-                gpio_put(startPin + i, rx_buffer[3+i]); // Toggles switches 1 through 4 according to the manual configuration loaded into rx_buffer. Requires 0s or 1s.
+                if (rx_buffer[3+i] <= 1) {
+                    gpio_put(startPin + i, rx_buffer[3+i]);
+                } else {
+                    LOG_ERROR("Manual switch settings must be 0 or 1");
+                }
             }
         break;
 
@@ -203,14 +206,13 @@ void handle_message() {
 
     
     default:
-        printf("Unknown message type 0x%02X\n", current_msg_type);
+        LOG_WARN("Unknown message type 0x%02X\n", current_msg_type);
     }
     
     return;
 }
 
 
-// Serial Protocol Input Parser
 void serial_input() {
     /*
     Parses incoming serial data (UART or USB) of the following protocol:
@@ -262,11 +264,20 @@ void serial_input() {
             
             case WAIT_LENGTH:
                 expected_length = byte;
+
+                // TODO: make sure this is a clean exit
+                if (expected_length >= MAX_PULSES){
+                    LOG_WARN("Length of packet exceeds MAX_PULSES. Resetting.");
+                    ser_state = WAIT_START;
+                }
+
                 checksum ^= byte;
                 data_index = 0;
                 ser_state = (expected_length > 0) ? WAIT_DATA : WAIT_CHECKSUM;
 
-                rx_buffer = (uint8_t*)calloc(sizeof(uint8_t), expected_length * sizeof(uint8_t)); // Dynamically defines rx_buffer
+                rx_buffer = (uint8_t*)calloc(sizeof(uint8_t), expected_length * sizeof(uint8_t));
+                if (rx_buffer == NULL) {LOG_ERROR("Memory allocation failed for rx_buffer");}
+
                 break;
 
             case WAIT_DATA:
@@ -283,7 +294,8 @@ void serial_input() {
                 if (checksum == byte) {
                     ser_state = WAIT_END;
                 } else {
-                    ser_state = WAIT_START; // Reset on checksum error TODO: function to report error TODO: make sure that everything clears properly on reset
+                    LOG_WARN("Checksum failed.");
+                    ser_state = WAIT_START; // Reset on checksum error TODO: make sure that everything clears properly on reset
                 }
                 break;
 
@@ -295,15 +307,14 @@ void serial_input() {
 
                     handle_message(); // Processes complete packet depending upon its instruction type
                 }
-                ser_state = WAIT_START; // Reset
+                ser_state = WAIT_START; // Reset TODO: make sure this resets cleanly
                 return;
         }
-        sleep_ms(1);
     }
 }
 
 
-// Pulse Functions
+// ==== Shot Controler ====
 void __time_critical_func(on_pwm_wrap)() {
     /*
     Runs
@@ -318,7 +329,7 @@ void __time_critical_func(on_pwm_wrap)() {
 
    
    // Calculates the following nextState for next cycle
-   //target = 100; // Target values from 0 - 99 are negative pulses. Values from 100 - 199 are positive pulses.
+   // Target values from 0 - 99 are negative pulses. Values from 100 - 199 are positive pulses.
 
    // Finds nextState from target
    if (target < 100) { // Negative pulses
@@ -330,7 +341,7 @@ void __time_critical_func(on_pwm_wrap)() {
     }
 
     // Sets Lower bound on DCP (1 us + switching time)/20 us ~7.5%
-    if (delay < 25) {nextState = freeCycle;} // TODO: add back in subseviding dead zone
+    if (delay < 25) {nextState = freeCycle;} // TODO: add back in subdividing dead zone
     // Sets Upper bound on DCP (18 us + switching time)/20 us ~92.5%
     if (delay > 450) {delay = 450;}              
 
@@ -366,14 +377,12 @@ void init_shot() {
     negCycle = (neg2free << 24) | free2neg;
 
 
-    // Set Up PIO
     // Choose PIO instance (0 or 1)
     PIO pio = pio0;
 
-    // Get first free state machine in PIO 0
     uint sm = pio_claim_unused_sm(pio, true);
 
-    // Add PIO program to PIO instruction memory. SDK will find location and return with the memory offset of the program.
+    // Add PIO program to PIO instruction memory. (SDK will find location and return with the memory offset of the program)
     uint offset = pio_add_program(pio, &pinsToggle_program);
 
     // PIO clock divider
@@ -443,26 +452,16 @@ void shutdown_shot() {
 
 
 int main() {
-    // Initializes Status Indicator LED
     init_led();
-
-
-    // Initialize Serial Configuration
     init_serial();
 
-    sleep_ms(500);
+    sleep_ms(500); // not needed
 
-
-    // Initialize PWM and PIO
     init_shot();
-
-    LOG_INFO("before serial_input");
 
     // Waits for next serial instruction input and loads it
     while (current_state != STATE_DATA_READY) {serial_input();}
 
-
-    LOG_INFO("after serial_input");
 
     // prints rx_buffer
     for (int i=0; i<200; i++) {
