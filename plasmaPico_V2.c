@@ -21,7 +21,8 @@ uint32_t S4 = 0x00000008; // 1000
 uint32_t S3 = 0x00000004; // 0100
 uint32_t S2 = 0x00000002; // 0010
 uint32_t S1 = 0x00000001; // 0001
-static const uint startPin = 10; // S1 output pin. Rest are assigned sequentially
+static const uint startPin = 10; // S1 output pin. Rest are assigned sequentially (GP10, pin 14)
+#define TRIGGER_PIN 2 // (GP2, pin 4)
 
 // Pulse States
 uint32_t __not_in_flash("pwm") stop2free, free2stop, free2poss, free2neg, poss2free, neg2free;
@@ -45,11 +46,11 @@ void init_led() {
 }
 
 typedef enum {
-    STATE_WAITING_USB,    // Blink slow (waiting for USB connection)
-    STATE_IDLE,           // LED off (no activity)
-    STATE_RECEIVING,      // Blink fast (receiving data)
-    STATE_DATA_READY,     // Double-blink (full buffer received)
-    STATE_OUTPUT_SHOT     // LED on
+    STATE_WAITING_USB,    // Blink slow
+    STATE_IDLE,           // LED on
+    STATE_RECEIVING,      // Long blink
+    STATE_DATA_READY,     // Double-blink
+    STATE_OUTPUT_SHOT     // Blink fast
 } SystemState;
 
 static SystemState current_state = STATE_WAITING_USB;
@@ -71,8 +72,8 @@ void update_led() {
             break;
 
         case STATE_RECEIVING:
-            // Rapid flicker (50ms on/off)
-            if (now - last_led_update >= 50) {
+            // Long blink, short pause (100ms off, 900ms on)
+            if (now - last_led_update >= (led_on ? 900 : 100)) {
                 led_on = !led_on;
                 gpio_put(LED_PIN, led_on);
                 last_led_update = now;
@@ -94,11 +95,16 @@ void update_led() {
             break;
 
         case STATE_IDLE:
-            gpio_put(LED_PIN, 0); // LED off
+            gpio_put(LED_PIN, 1); // LED on
             break;
 
         case STATE_OUTPUT_SHOT:
-            gpio_put(LED_PIN, 1); // LED on
+            // Rapid flicker (50ms on/off)
+            if (now - last_led_update >= 50) {
+                led_on = !led_on;
+                gpio_put(LED_PIN, led_on);
+                last_led_update = now;
+            }
             break;
     }
 }
@@ -314,6 +320,15 @@ void serial_input() {
 }
 
 
+int* build_packet(int msg_type, int data[]) {
+    // to be implimented
+}
+
+void return_shot_data() {
+    // to be implimented
+}
+
+
 // ==== Shot Controler ====
 void __time_critical_func(on_pwm_wrap)() {
     /*
@@ -424,6 +439,8 @@ void run_shot(uint16_t pulseCycles) {
     // Pulse Loop
     for (uint16_t cycle = 0; cycle < pulseCycles; cycle++) {
         sleep_ms(1);
+        update_led();
+
         target = pulse_buffer[cycle]; // Sets the target variable which is pulled by the PWM function
     }
 
@@ -451,6 +468,17 @@ void shutdown_shot() {
 }
 
 
+void wait_for_pin_low(uint pin) {
+    gpio_init(pin);
+    gpio_set_dir(pin, GPIO_IN);
+    gpio_pull_up(pin);
+    
+    while (gpio_get(pin) == 1) {
+        tight_loop_contents();
+    }
+}
+
+
 int main() {
     init_led();
     init_serial();
@@ -459,18 +487,28 @@ int main() {
 
     init_shot();
 
-    // Waits for next serial instruction input and loads it
-    while (current_state != STATE_DATA_READY) {serial_input();}
+    // Main operations loop
+    while (true) {
+    
+        // Waits for next serial instruction input and loads it
+        while (current_state != STATE_DATA_READY) {
+            serial_input();
+            update_led();
+        }
 
+        // Runs shot if one is sent
+        if (current_msg_type == MSG_PWM) {
+            // TODO: add ack before shot
 
-    // prints rx_buffer
-    for (int i=0; i<200; i++) {
-        sleep_ms(10);
-        printf("%X  ", rx_buffer[i]);
-    }
+            wait_for_pin_low(TRIGGER_PIN);
 
-    if (current_msg_type == MSG_PWM) {
-        run_shot(num_pulses);
+            current_state = STATE_OUTPUT_SHOT; // for update_led()
+            run_shot(num_pulses);
+            current_state = STATE_IDLE;
+
+            return_shot_data();
+        }
+
     }
 
     shutdown_shot();
