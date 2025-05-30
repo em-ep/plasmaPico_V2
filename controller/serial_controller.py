@@ -17,7 +17,7 @@ class SerialController:
     Supports sending shot PWM pulses, manual commands, and configuration commands
 
     Protocol Format:
-    [START_BYTE][TYPE][LENGTH][DATA...][CHECKSUM][END_BYTE]
+    [START_BYTE][TYPE][LENGTH_MSB][LENGTH_LSB][DATA...][CHECKSUM][END_BYTE]
     """
 
     START_BYTE = 0xAA
@@ -50,11 +50,17 @@ class SerialController:
         Construct a complete packet 
 
         Protocol Format:
-        [START_BYTE][TYPE][LENGTH][DATA...][CHECKSUM][END_BYTE]
+        [START_BYTE][TYPE][LENGTH_MSB][LENGTH_LSB][DATA...][CHECKSUM][END_BYTE]
         """
 
         length = len(data)
-        header = [self.START_BYTE, msg_type.value, length]
+        if length > self.MAX_PULSES:
+            raise ValueError(f"Data too long ({length} bytes), max is {self.MAX_PULSES}")
+        
+        length_msb = (length >> 8) & 0xFF
+        length_lsb = length & 0xFF
+
+        header = [self.START_BYTE, msg_type.value, length_msb, length_lsb]
         checksum = self.calculate_checksum(header + data)
 
         return bytes(header + data + [checksum, self.END_BYTE])
@@ -102,8 +108,11 @@ controller = SerialController(port='COM3')
 
 pulseList = []
 
-for i in range(0, 200):
-    pulseList.append(i)
+for i in range(0, 100):
+    if i%2 == 0:
+        pulseList.append(50)
+    else:
+        pulseList.append(150)
 
 print(controller.ser.readline())
 print(controller.ser.readline())

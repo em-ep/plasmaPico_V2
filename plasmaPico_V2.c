@@ -47,9 +47,9 @@ void init_led() {
 
 typedef enum {
     STATE_WAITING_USB,    // Blink slow
-    STATE_IDLE,           // LED on
+    STATE_IDLE,           // Double-blink
     STATE_RECEIVING,      // Long blink
-    STATE_DATA_READY,     // Double-blink
+    STATE_DATA_READY,     // LED on
     STATE_OUTPUT_SHOT     // Blink fast
 } SystemState;
 
@@ -81,6 +81,10 @@ void update_led() {
             break;
         
         case STATE_DATA_READY:
+            gpio_put(LED_PIN, 1); // LED on
+            break;
+
+        case STATE_IDLE:
             // Double-blink, pause (100ms on, 100ms off, 100ms on, 700ms off)
             static uint8_t blink_phase = 0;
             if (now - last_led_update >=
@@ -93,10 +97,7 @@ void update_led() {
                 last_led_update = now;
             }
             break;
-
-        case STATE_IDLE:
-            gpio_put(LED_PIN, 1); // LED on
-            break;
+            
 
         case STATE_OUTPUT_SHOT:
             // Rapid flicker (50ms on/off)
@@ -131,13 +132,17 @@ void update_led() {
 typedef enum {
     MSG_PWM = 0x01,
     MSG_MANUAL = 0x02,
-    MSG_CONFIG = 0x03
+    MSG_CONFIG = 0x03,
 } MessageType;
 MessageType current_msg_type;
 
+#define MSG_RETURN_RX 0x04
+#define MSG_RETURN_PULSE 0x05
+#define MSG_RETURN_ADC 0x06
+
 // Recieved pulse buffer
-uint8_t* rx_buffer = NULL;
-uint8_t *pulse_buffer = NULL;
+uint8_t __not_in_flash("pwm") *rx_buffer = NULL;
+uint8_t __not_in_flash("pwm") *pulse_buffer = NULL;
 uint16_t num_pulses = 0;
 
 
@@ -222,24 +227,25 @@ void handle_message() {
 void serial_input() {
     /*
     Parses incoming serial data (UART or USB) of the following protocol:
-    [START_BYTE][TYPE][LENGTH][DATA...][CHECKSUM][END_BYTE]
+    [START_BYTE][TYPE][LENGTH_MSB][LENGTH_LSB][DATA...][CHECKSUM][END_BYTE]
     
     Start/End: 0xAA/0x55
     Types: 0x01 (PWM), 0x02 (Manual Mode), 0x03 (Config)
     */
-    static enum { WAIT_START, WAIT_LENGTH, WAIT_TYPE, WAIT_DATA, WAIT_CHECKSUM, WAIT_END } ser_state = WAIT_START;
+    static enum { WAIT_START, WAIT_LENGTH_MSB, WAIT_LENGTH_LSB, WAIT_TYPE, WAIT_DATA, WAIT_CHECKSUM, WAIT_END } ser_state = WAIT_START;
     
     // For info logging
     const char* ser_state_names[] = {
     [WAIT_START] = "WAIT_START",
-    [WAIT_LENGTH] = "WAIT_LENGTH",
+    [WAIT_LENGTH_MSB] = "WAIT_LENGTH_MSB",
+    [WAIT_LENGTH_LSB] = "WAIT_LENGTH_LSB",
     [WAIT_TYPE] = "WAIT_TYPE",
     [WAIT_DATA] = "WAIT_DATA",
     [WAIT_CHECKSUM] = "WAIT_CHECKSUM",
     [WAIT_END] = "WAIT_END"
     };
 
-    static uint8_t expected_length = 0;
+    static uint16_t expected_length = 0;
     static uint8_t checksum = 0;
     static uint16_t data_index = 0;
 
@@ -261,28 +267,38 @@ void serial_input() {
                 if (byte == MSG_PWM || byte == MSG_MANUAL || byte == MSG_CONFIG) {
                     current_msg_type = (MessageType)byte;
                     checksum ^= byte;
-                    ser_state = WAIT_LENGTH;
+                    ser_state = WAIT_LENGTH_MSB;
                 } else {
                     ser_state = WAIT_START; // Reset on invalid type TODO: determine if we want to throw an error flag TODO: make sure this doesn't break the LED indicator
                 }
                 break;
 
+            case WAIT_LENGTH_MSB:
+                expected_length = (uint16_t)byte << 8;
+                checksum ^= byte;
+                ser_state = WAIT_LENGTH_LSB;
+                break;
+
             
-            case WAIT_LENGTH:
-                expected_length = byte;
+            case WAIT_LENGTH_LSB:
+                expected_length |= (uint16_t)byte;
+                checksum ^= byte;
 
                 // TODO: make sure this is a clean exit
                 if (expected_length >= MAX_PULSES){
                     LOG_WARN("Length of packet exceeds MAX_PULSES. Resetting.");
                     ser_state = WAIT_START;
+                    break;
                 }
 
-                checksum ^= byte;
                 data_index = 0;
                 ser_state = (expected_length > 0) ? WAIT_DATA : WAIT_CHECKSUM;
 
                 rx_buffer = (uint8_t*)calloc(sizeof(uint8_t), expected_length * sizeof(uint8_t));
-                if (rx_buffer == NULL) {LOG_ERROR("Memory allocation failed for rx_buffer");}
+                if (rx_buffer == NULL) {
+                    LOG_ERROR("Memory allocation failed for rx_buffer");
+                    ser_state = WAIT_START;
+                }
 
                 break;
 
@@ -311,7 +327,7 @@ void serial_input() {
 
                     current_state = STATE_DATA_READY;
 
-                    handle_message(); // Processes complete packet depending upon its instruction type
+                    handle_message(); // Processes complete packet
                 }
                 ser_state = WAIT_START; // Reset TODO: make sure this resets cleanly
                 return;
@@ -320,12 +336,62 @@ void serial_input() {
 }
 
 
-int* build_packet(int msg_type, int data[]) {
-    // to be implimented
+uint8_t* build_packet(int msg_type, uint8_t data[], size_t data_length) {
+    /*
+    Constructs a complete return packet
+
+    Protocol Format:
+    [START_BYTE][TYPE][LENGTH_MSB][LENGTH_LSB][DATA...][CHECKSUM][END_BYTE]
+    */
+
+    if (data_length > MAX_PULSES) {
+        LOG_ERROR("Size of return data (%zu bytes) larger than %d", data_length, MAX_PULSES);
+        return NULL;
+    }
+
+    size_t return_length = data_length + 6;
+
+    uint8_t* packet = malloc(return_length + 6);
+    if (!packet) {
+        LOG_ERROR("Memory allocation failed");
+        return NULL;
+    }
+
+    packet[0] = START_BYTE;
+    packet[1] = msg_type;
+    packet[2] = (return_length >> 8) & 0xFF;
+    packet[3] = return_length & 0xFF;
+
+    if (return_length > 0 && data) {
+        memcpy(packet +4 , data, return_length);
+    }
+
+    uint8_t checksum = 0;
+    for (size_t i = 1; i < return_length+4; i++) {
+        checksum ^= packet[i];
+    }
+    packet[return_length+4] = checksum;
+
+    packet[return_length+5] = END_BYTE;
+
+    return packet;
 }
 
-void return_shot_data() {
-    // to be implimented
+void serial_output(int msg_type, uint8_t data[], size_t data_length) {
+    /*
+    Builds and returns packets with data from the shot
+    */
+
+    uint8_t* packet = build_packet(msg_type, data, data_length);
+
+    #ifdef USE_USB_CDC
+    fwrite(packet, 1, data_length+6, stdout);
+    fflush(stdout);
+    #elif defined(USE_UART)
+    uart_write_blocking(UART_ID, packet, data_length+6);
+    #endif
+
+    free(packet);
 }
 
 
@@ -506,7 +572,7 @@ int main() {
             run_shot(num_pulses);
             current_state = STATE_IDLE;
 
-            return_shot_data();
+            serial_output(MSG_RETURN_RX, rx_buffer, num_pulses);
         }
 
     }

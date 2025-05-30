@@ -38,6 +38,9 @@
     "raspberry-pi-pico.ninjaPath": "${HOME}/.pico-sdk/ninja/v1.12.1/ninja",
     "files.associations": {
         "gpio.h": "c",
-        "pio.h": "c"
+        "pio.h": "c",
+        "array": "c",
+        "string": "c",
+        "string_view": "c"
     }
 }
