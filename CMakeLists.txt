@@ -48,7 +48,8 @@ target_link_libraries(plasmaPico_V2
     pico_stdlib
     hardware_pio
     hardware_pwm
-    hardware_adc)
+    hardware_adc
+    hardware_sync)
 
 # Create C header file with the name <pio program>.pio.h
 pico_generate_pio_header(${PROJECT_NAME}

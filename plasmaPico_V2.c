@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include "pico/stdlib.h"
+#include "pico/sem.h"
 #include "pico/time.h"
 #include "pico/malloc.h"
 #include "hardware/pio.h"
@@ -30,8 +31,10 @@ uint32_t __not_in_flash("pwm") freeCycle, possCycle, negCycle;
 uint32_t __not_in_flash("pwm") nextState, cycleCount;
 
 // Pulse Charicteristics
-uint32_t __not_in_flash("pwm") delay;
-uint32_t __not_in_flash("pwm") target;
+static volatile uint32_t __not_in_flash("pwm") delay;
+static volatile uint32_t __not_in_flash("pwm") target;
+
+semaphore_t pwm_sem;
 
 // The Number of the PIO State Machine
 uint __not_in_flash("pwm") sm;
@@ -403,7 +406,6 @@ void __time_critical_func(on_pwm_wrap)() {
    // Clears interrupt flag
    pwm_clear_irq(0);
 
-
    // Pushes the stored next pulse state to the FIFO
    //pio_sm_put(pio0, sm, nextState);
    pio0->txf[sm] = nextState; // Same as pio_sm_put without checking
@@ -431,6 +433,8 @@ void __time_critical_func(on_pwm_wrap)() {
     nextState = nextState | ( delay << 8);
 
     cycleCount++;
+
+    sem_release(&pwm_sem);
 }
 
 
@@ -485,6 +489,8 @@ void init_shot() {
     pwm_init(0, &config, false);
 
 
+    sem_init(&pwm_sem, 1, 1);
+
     return;
 }
 
@@ -501,13 +507,13 @@ void run_shot(uint16_t pulseCycles) {
     // Start PWM
     pwm_set_enabled(0, true);
     //busy_wait_ms(10);
+    int new_target = 0;
 
     // Pulse Loop
     for (uint16_t cycle = 0; cycle < pulseCycles; cycle++) {
-        sleep_ms(1);
-        update_led();
-
-        target = pulse_buffer[cycle]; // Sets the target variable which is pulled by the PWM function
+        new_target = pulse_buffer[cycle];
+        sem_acquire_blocking(&pwm_sem);
+        target = new_target;
     }
 
 
@@ -549,7 +555,7 @@ int main() {
     init_led();
     init_serial();
 
-    sleep_ms(500); // not needed
+    // sleep_ms(500); // not needed
 
     init_shot();
 
