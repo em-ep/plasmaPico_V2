@@ -515,6 +515,11 @@ void run_shot(uint16_t pulseCycles) {
         sem_acquire_blocking(&pwm_sem);
         target = new_target;
     }
+    
+    // Shutdown PWM
+    pwm_set_enabled(0, false);
+    // Return to off state
+    pio_sm_put(pio0, sm, stop2free);
 
 
     return;
