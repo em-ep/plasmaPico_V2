@@ -1,7 +1,9 @@
 import serial
+import threading
 import time
 from enum import Enum
-from typing import List, Union
+from typing import List, Optional, Tuple
+from queue import Queue
 
 
 class MessageType(Enum):
@@ -9,6 +11,7 @@ class MessageType(Enum):
     MSG_PWM = 0x01
     MSG_MANUAL = 0x02
     MSG_CONFIG = 0x03
+    MSG_RETURN_RX = 0x80
 
 
 class SerialController:
@@ -21,18 +24,27 @@ class SerialController:
     """
 
     START_BYTE = 0xAA
-    END_BYTE = 0x55
+    END_BYTE = 0xFF
     MAX_PULSES = 16000 # Max pulses per packet - ensure agreement with the transmitter
 
-    def __init__(self, port: str, baudrate: int = 9600, timeout: float = 1.0):
+    def __init__(self, port: str, baudrate: int = 9600, timeout: float = 1.0, debug=False):
         """
         Initialize the serial connection
         """
         self.ser = serial.Serial(port, baudrate=baudrate, timeout=timeout, bytesize=8, parity='N', stopbits=1)
+
+        self.received_packets = []
+        self._listener_running = False
+        self._listener_thread = None
+        self._response_queue = Queue()
+        self._serial_lock = threading.Lock()
+        self._debug_enabled = debug
+
         time.sleep(2) # Waits for connection to establish TODO: add check here
 
     def close(self):
-        """Closes the serial connection."""
+        """Closes the serial connection and stops debug thread."""
+        self.stop_listener_thread()
         self.ser.close()
 
     def calculate_checksum(self, data: List[int]) -> int:
@@ -41,7 +53,7 @@ class SerialController:
 
         for byte in data:
             checksum ^= byte
-        
+
         return checksum
     
 
@@ -61,10 +73,162 @@ class SerialController:
         length_lsb = length & 0xFF
 
         header = [self.START_BYTE, msg_type.value, length_msb, length_lsb]
-        checksum = self.calculate_checksum(header + data)
+        checksum = self.calculate_checksum(data)
 
         return bytes(header + data + [checksum, self.END_BYTE])
     
+    def parse_packet(self, packet: bytes) -> Optional[Tuple[MessageType, List[int]]]:
+        """
+        Parse a recieved packet and return (message_type, data) if valid
+        Returns None if packt is invalid
+        """
+
+        if len(packet) < 6:
+            return None
+        
+        if packet[0] != self.START_BYTE or packet[-1] != self.END_BYTE:
+            return None
+        
+        # Checksum includes only data
+        data_start = 4
+        data_end = -2 # exclude checksum and end
+        data = packet[data_start : data_end]
+        print(f"data={data.hex()}")
+        calculated_checksum = 0
+        for elem in data:
+            calculated_checksum ^= elem
+        if calculated_checksum != packet[-2]:
+            print(f"checksum wrong: calc={calculated_checksum}, recv={packet[-2]} \n packet={packet.hex()}")
+            return None
+        
+        try:
+            msg_type = MessageType(packet[1])
+        except ValueError:
+            return None
+        
+        length = (packet[2] << 8) | packet[3]
+        if (4+length)>(len(packet)-2): # Check if length matches
+            return None #TODO: Error handling
+        data = list(packet[4:4+length])
+
+        return (msg_type, data)
+    
+    def start_listener_thread(self):
+        """
+        Start the serial listener thread
+        """
+        if self._listener_running:
+            return
+        
+        self._listener_running = True
+        self._listener_thread = threading.Thread(
+            target=self._serial_listener,
+            daemon=True
+        )
+        self._listener_thread.start()
+
+    def stop_listener_thread(self):
+        """
+        Stop the serial listener thread
+        """
+        self._listener_running = False
+        if self._listener_thread is not None:
+            self._listener_thread.join()
+            self._listener_thread = None
+
+    def _serial_listener(self):
+        """
+        Single thread that handles all incoming seria data:
+        - Protocol packets
+        - Debug messages
+        """
+        buffer = bytearray()
+        debug_prefixes = {b'[ERROR]', b'[WARN]', b'[INFO]', b'[DEBUG]'}
+
+        while self._listener_running:
+            try:
+                with self._serial_lock:
+                    if self.ser.in_waiting:
+                        byte = self.ser.read(1)
+                        buffer += byte
+                        print(f"raw: {buffer.hex()}")
+
+                        # Check for protocol packet first
+                        if len(buffer) >= 6 and buffer[0] == self.START_BYTE and buffer[-1] == self.END_BYTE: # TODO: Prevent buffer overflow
+                            print("packet found!")
+                            parsed = self.parse_packet(bytes(buffer))
+                            print(f"parsed={parsed}")
+                            if parsed:
+                                print("packet parsed!")
+                                self.received_packets.append(parsed)
+                                if parsed[0] == MessageType.MSG_RETURN_RX:
+                                    self._response_queue.put(parsed)
+                                buffer = bytearray() # clear buffer
+                                continue
+
+                        # Check for debug messages
+                        elif len(buffer) > 0 and buffer[0] == 0x5B: # '['
+                            if buffer[-1] == 0x0A: # '\n'
+                                if self._debug_enabled:
+                                    try:
+                                        message = buffer.decode('utf-8').strip()
+                                        if any(message.startswith(prefix.decode('utf-8')) for prefix in debug_prefixes):
+                                            print(message)
+                                        elif message:
+                                            print(f"[SERIAL] {message}") # TODO: change to [UNKNOWN]?
+                                    except UnicodeDecodeError:
+                                        print(f"[BINARY] {buffer.hex()}")
+                                
+                                buffer = bytearray() # clear buffer
+
+                    else:
+                        time.sleep(0.01)
+
+            except Exception as e:
+                print(f"Error in serial listener: {e}")
+                buffer = bytearray()
+                        
+
+    def read_packet(self, timeout: float = 1.0) -> Optional[Tuple[MessageType, List[int]]]:
+        """
+        Read and parse a single packet from the serial port
+        Returns (message_type, data) if successful, None otherwise
+        """
+        start_time = time.time()
+        buffer = bytearray()
+
+        while time.time() - start_time < timeout:
+            with self._serial_lock:
+                if self.ser.in_waiting:
+                    byte = self.ser.read(1)
+                    buffer += byte
+
+                    # Check for a complete packet
+                    if len(buffer) >= 6 and buffer[0] == self.START_BYTE and buffer[-1] == self.END_BYTE:
+                        parsed = self.parse_packet(bytes(buffer))
+                        if parsed:
+                            print("parsed")
+                            self.received_packets.append(parsed)
+                            if parsed[0] == MessageType.MSG_RETURN_RX:
+                                self._response_queue.put(parsed)
+                            
+                            return parsed
+                        buffer = bytearray() # Reset buffer if packet is invalid
+                else:
+                    time.sleep(0.01)
+
+        return None
+    
+
+    def get_response(self, timeout:float = 1.0) -> Optional[Tuple[MessageType, List[int]]]:
+        """
+        Get the next response packet from the queue
+        Returns None if no response received within timeout
+        """
+        try:
+            return self._response_queue.get(timeout=timeout)
+        except:
+            return None
 
     def send_pwm_pulses(self, pulses: List[int]):
         """
@@ -72,7 +236,7 @@ class SerialController:
         """
         
         if (len(pulses) > self.MAX_PULSES):
-            print(f"Number of puses ({len(pulses)}) is too long. Returning") # TODO: better error handling
+            print(f"Number of pulses ({len(pulses)}) is too long. Returning") # TODO: better error handling
             
             return -1
 
@@ -104,36 +268,40 @@ class SerialController:
         Not yet implimented
         """
 
-controller = SerialController(port='COM3')
-
-pulseList = []
-
-for i in range(0, 100):
-    if i%2 == 0:
-        pulseList.append(50)
-    else:
-        pulseList.append(150)
-
-print(controller.ser.readline())
-print(controller.ser.readline())
-print(controller.ser.readline())
-
-print("sending now")
-controller.send_pwm_pulses(pulseList)
-
-while True:
-    print(controller.ser.readline())
-
-time.sleep(10)
 
 
-# if __name__ == "__main__":
-#     try:
-#         # Initialize controller (change port as needed)
-#         controller = SerialController(port='COM3')
+if __name__ == "__main__":
+    try:
+        # Initialize controller (change port as needed)
+        controller = SerialController(port='COM3', debug=True)
+        controller.start_listener_thread()
 
-#     except serial.SerialException as e:
-#         print(f"Serial error: {e}")
+        cs = 0
+        # Test usage
+        pulseList = []
+        for i in range(0, 200):
+            pulseList.append(i)
+            cs ^=i
+            # if i%2 == 0:
+            #     pulseList.append(50)
+            # else:
+            #     pulseList.append(150)
+        print(f"cs={cs}")
+        print(f"sendingData={pulseList}")
+        print("Sending PWM pulses...")
+        controller.send_pwm_pulses(pulseList)
+
+        for i in range(0, 5):
+            response = controller.get_response(timeout=2.0)
+            if response:
+                msg_type, data = response
+                print(f"Received response {i}: Type={msg_type}, Data={data}")
+            else:
+                print(f"none received {i}")
 
 
-controller.close()
+    except serial.SerialException as e:
+        print(f"Serial error: {e}")
+
+    finally:
+        controller.close()

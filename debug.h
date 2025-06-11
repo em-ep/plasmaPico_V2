@@ -2,7 +2,7 @@
 #pragma once
 
 // Debug levels (0=OFF, 1=ERROR, 2=WARN, 3=INFO, 4=DEBUG)
-#define DEBUG_LEVEL 3 // Leave at default value. Overwrite per-file or via compiler flags
+#define DEBUG_LEVEL 1 // Leave at default value. Overwrite per-file or via compiler flags
 
 // Helper macros
 #define STRINGIFY(x) #x
@@ -16,7 +16,7 @@
     #define LOG_ERROR(fmt, ...)
 #endif
 
-// Level 2: Warnings (unexpected states)
+// Level 2: Waarnings (unexpected states)
 #if DEBUG_LEVEL >= 2
     #define LOG_WARN(fmt, ...) \
         printf("[WARN]  %s(): " fmt "\n", __func__, ##__VA_ARGS__)

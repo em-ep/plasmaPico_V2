@@ -11,6 +11,7 @@
 #include "hardware/adc.h"
 #include "hardware/uart.h"
 #include "hardware/gpio.h"
+#include "tusb.h"
 
 #include "pinsToggle.pio.h"
 #include "debug.h"
@@ -128,7 +129,7 @@ void update_led() {
 
 // Serial Protocol Constants
 #define START_BYTE 0xAA
-#define END_BYTE 0x55
+#define END_BYTE 0xFF
 #define MAX_PULSES 16000 // Max pulses per packet - ensure agreement with the transmitter
 
 // Message Bytes
@@ -139,9 +140,9 @@ typedef enum {
 } MessageType;
 MessageType current_msg_type;
 
-#define MSG_RETURN_RX 0x04
-#define MSG_RETURN_PULSE 0x05
-#define MSG_RETURN_ADC 0x06
+#define MSG_RETURN_RX 0x80
+#define MSG_RETURN_PULSE 0x81
+#define MSG_RETURN_ADC 0x82
 
 // Recieved pulse buffer
 uint8_t __not_in_flash("pwm") *rx_buffer = NULL;
@@ -232,7 +233,7 @@ void serial_input() {
     Parses incoming serial data (UART or USB) of the following protocol:
     [START_BYTE][TYPE][LENGTH_MSB][LENGTH_LSB][DATA...][CHECKSUM][END_BYTE]
     
-    Start/End: 0xAA/0x55
+    Start/End: 0xAA/0xFF
     Types: 0x01 (PWM), 0x02 (Manual Mode), 0x03 (Config)
     */
     static enum { WAIT_START, WAIT_LENGTH_MSB, WAIT_LENGTH_LSB, WAIT_TYPE, WAIT_DATA, WAIT_CHECKSUM, WAIT_END } ser_state = WAIT_START;
@@ -259,7 +260,6 @@ void serial_input() {
         switch (ser_state) {
             case WAIT_START:
                 if (byte == START_BYTE) {
-                    checksum = START_BYTE;
                     ser_state = WAIT_TYPE;
 
                     current_state = STATE_RECEIVING; // LED indicator data incoming
@@ -269,7 +269,6 @@ void serial_input() {
             case WAIT_TYPE:
                 if (byte == MSG_PWM || byte == MSG_MANUAL || byte == MSG_CONFIG) {
                     current_msg_type = (MessageType)byte;
-                    checksum ^= byte;
                     ser_state = WAIT_LENGTH_MSB;
                 } else {
                     ser_state = WAIT_START; // Reset on invalid type TODO: determine if we want to throw an error flag TODO: make sure this doesn't break the LED indicator
@@ -278,14 +277,12 @@ void serial_input() {
 
             case WAIT_LENGTH_MSB:
                 expected_length = (uint16_t)byte << 8;
-                checksum ^= byte;
                 ser_state = WAIT_LENGTH_LSB;
                 break;
 
             
             case WAIT_LENGTH_LSB:
                 expected_length |= (uint16_t)byte;
-                checksum ^= byte;
 
                 // TODO: make sure this is a clean exit
                 if (expected_length >= MAX_PULSES){
@@ -352,9 +349,9 @@ uint8_t* build_packet(int msg_type, uint8_t data[], size_t data_length) {
         return NULL;
     }
 
-    size_t return_length = data_length + 6;
+    size_t packet_length = 4 + data_length + 1 + 1;
 
-    uint8_t* packet = malloc(return_length + 6);
+    uint8_t* packet = malloc(packet_length);
     if (!packet) {
         LOG_ERROR("Memory allocation failed");
         return NULL;
@@ -362,20 +359,23 @@ uint8_t* build_packet(int msg_type, uint8_t data[], size_t data_length) {
 
     packet[0] = START_BYTE;
     packet[1] = msg_type;
-    packet[2] = (return_length >> 8) & 0xFF;
-    packet[3] = return_length & 0xFF;
+    packet[2] = (data_length >> 8) & 0xFF;
+    packet[3] = data_length & 0xFF;
 
-    if (return_length > 0 && data) {
-        memcpy(packet +4 , data, return_length);
+    // Data
+    if (data_length > 0 && data) {
+        memcpy(packet + 4 , data, data_length);
     }
 
+    // Checksum (XOR of all bytes except END_BYTE)
     uint8_t checksum = 0;
-    for (size_t i = 1; i < return_length+4; i++) {
+    for (size_t i = 4; i < 4 + data_length; i++) {
         checksum ^= packet[i];
     }
-    packet[return_length+4] = checksum;
 
-    packet[return_length+5] = END_BYTE;
+    packet[4 + data_length] = checksum;
+
+    packet[4 + data_length + 1] = END_BYTE;
 
     return packet;
 }
@@ -387,9 +387,17 @@ void serial_output(int msg_type, uint8_t data[], size_t data_length) {
 
     uint8_t* packet = build_packet(msg_type, data, data_length);
 
+    LOG_ERROR("%x, %x, %x, %x, %x, %x, %x, %x, %x", packet[0], packet[1], packet[2], packet[3], packet[4], packet[5], packet[6], packet[7], packet[data_length+5]);
+
     #ifdef USE_USB_CDC
-    fwrite(packet, 1, data_length+6, stdout);
-    fflush(stdout);
+    // Implemented as workaround since fwrite was randomly adding 0x0d bytes in the middle of the return packets.
+    // TODO: make sure that the tud method is implemented nicely throughout the protocol
+    if (tud_cdc_connected()) {
+        tud_cdc_write(packet, data_length+6);
+        tud_cdc_write_flush(); 
+    }
+    // fwrite(packet, 1, data_length+6, stdout);
+    // fflush(stdout);
     #elif defined(USE_UART)
     uart_write_blocking(UART_ID, packet, data_length+6);
     #endif
