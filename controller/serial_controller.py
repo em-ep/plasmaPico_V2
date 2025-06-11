@@ -93,12 +93,11 @@ class SerialController:
         data_start = 4
         data_end = -2 # exclude checksum and end
         data = packet[data_start : data_end]
-        print(f"data={data.hex()}")
         calculated_checksum = 0
         for elem in data:
             calculated_checksum ^= elem
         if calculated_checksum != packet[-2]:
-            print(f"checksum wrong: calc={calculated_checksum}, recv={packet[-2]} \n packet={packet.hex()}")
+            print(f"checksum wrong: calc={calculated_checksum}, recv={packet[-2]}")
             return None
         
         try:
@@ -151,15 +150,12 @@ class SerialController:
                     if self.ser.in_waiting:
                         byte = self.ser.read(1)
                         buffer += byte
-                        print(f"raw: {buffer.hex()}")
+                        # print(f"raw: {buffer.hex()}")
 
                         # Check for protocol packet first
                         if len(buffer) >= 6 and buffer[0] == self.START_BYTE and buffer[-1] == self.END_BYTE: # TODO: Prevent buffer overflow
-                            print("packet found!")
                             parsed = self.parse_packet(bytes(buffer))
-                            print(f"parsed={parsed}")
                             if parsed:
-                                print("packet parsed!")
                                 self.received_packets.append(parsed)
                                 if parsed[0] == MessageType.MSG_RETURN_RX:
                                     self._response_queue.put(parsed)
@@ -207,7 +203,6 @@ class SerialController:
                     if len(buffer) >= 6 and buffer[0] == self.START_BYTE and buffer[-1] == self.END_BYTE:
                         parsed = self.parse_packet(bytes(buffer))
                         if parsed:
-                            print("parsed")
                             self.received_packets.append(parsed)
                             if parsed[0] == MessageType.MSG_RETURN_RX:
                                 self._response_queue.put(parsed)
@@ -286,8 +281,7 @@ if __name__ == "__main__":
             #     pulseList.append(50)
             # else:
             #     pulseList.append(150)
-        print(f"cs={cs}")
-        print(f"sendingData={pulseList}")
+        # print(f"sendingData={pulseList}")
         print("Sending PWM pulses...")
         controller.send_pwm_pulses(pulseList)
 

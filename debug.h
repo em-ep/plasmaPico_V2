@@ -2,7 +2,7 @@
 #pragma once
 
 // Debug levels (0=OFF, 1=ERROR, 2=WARN, 3=INFO, 4=DEBUG)
-#define DEBUG_LEVEL 1 // Leave at default value. Overwrite per-file or via compiler flags
+#define DEBUG_LEVEL 3 // Leave at default value. Overwrite per-file or via compiler flags
 
 // Helper macros
 #define STRINGIFY(x) #x

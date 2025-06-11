@@ -255,7 +255,7 @@ void serial_input() {
 
     int byte;
     while ((byte = read_serial_byte()) != PICO_ERROR_TIMEOUT) {
-        LOG_INFO("ser_state = %s", ser_state_names[ser_state]);
+        LOG_DEBUG("ser_state = %s", ser_state_names[ser_state]);
 
         switch (ser_state) {
             case WAIT_START:
@@ -387,7 +387,7 @@ void serial_output(int msg_type, uint8_t data[], size_t data_length) {
 
     uint8_t* packet = build_packet(msg_type, data, data_length);
 
-    LOG_ERROR("%x, %x, %x, %x, %x, %x, %x, %x, %x", packet[0], packet[1], packet[2], packet[3], packet[4], packet[5], packet[6], packet[7], packet[data_length+5]);
+    // LOG_ERROR("%x, %x, %x, %x, %x, %x, %x, %x, %x", packet[0], packet[1], packet[2], packet[3], packet[4], packet[5], packet[6], packet[7], packet[data_length+5]);
 
     #ifdef USE_USB_CDC
     // Implemented as workaround since fwrite was randomly adding 0x0d bytes in the middle of the return packets.
