@@ -1,6 +1,7 @@
 import serial
 import threading
 import time
+import math
 from enum import Enum
 from typing import List, Optional, Tuple
 from queue import Queue
@@ -271,17 +272,28 @@ if __name__ == "__main__":
         controller = SerialController(port='COM3', debug=True)
         controller.start_listener_thread()
 
-        cs = 0
         # Test usage
+        maximum = 200
+        nextNum = 100
+        flip = False
         pulseList = []
-        for i in range(0, 200):
-            pulseList.append(i)
-            cs ^=i
+        for i in range(0, maximum):
+            pulseList.append(int(nextNum))
+
+            if flip == False:
+                nextNum += 1
+            elif flip == True:
+                nextNum -= 1
+            
+            if nextNum >= 200:
+                flip = True
+            elif nextNum <= 1:
+                flip = False
             # if i%2 == 0:
             #     pulseList.append(50)
             # else:
             #     pulseList.append(150)
-        # print(f"sendingData={pulseList}")
+        print(f"sendingData={pulseList}")
         print("Sending PWM pulses...")
         controller.send_pwm_pulses(pulseList)
 

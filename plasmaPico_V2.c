@@ -316,7 +316,7 @@ void serial_input() {
                 if (checksum == byte) {
                     ser_state = WAIT_END;
                 } else {
-                    LOG_WARN("Checksum failed.");
+                    LOG_WARN("Checksum failed. Resetting.");
                     ser_state = WAIT_START; // Reset on checksum error TODO: make sure that everything clears properly on reset
                 }
                 break;
@@ -326,6 +326,7 @@ void serial_input() {
                     num_pulses = expected_length;
 
                     current_state = STATE_DATA_READY;
+                    LOG_INFO("Complete packet of length %u received.", expected_length);
 
                     handle_message(); // Processes complete packet
                 }
@@ -351,6 +352,8 @@ uint8_t* build_packet(int msg_type, uint8_t data[], size_t data_length) {
 
     size_t packet_length = 4 + data_length + 1 + 1;
 
+    LOG_INFO("Building return packet of packet_length= %u and msg_type= %d", packet_length, msg_type);
+
     uint8_t* packet = malloc(packet_length);
     if (!packet) {
         LOG_ERROR("Memory allocation failed");
@@ -366,6 +369,7 @@ uint8_t* build_packet(int msg_type, uint8_t data[], size_t data_length) {
     if (data_length > 0 && data) {
         memcpy(packet + 4 , data, data_length);
     }
+    LOG_INFO("Data copied successfully");
 
     // Checksum (XOR of all bytes except END_BYTE)
     uint8_t checksum = 0;
@@ -374,6 +378,7 @@ uint8_t* build_packet(int msg_type, uint8_t data[], size_t data_length) {
     }
 
     packet[4 + data_length] = checksum;
+    LOG_DEBUG("checksum(dec, hex)=%u, %x");
 
     packet[4 + data_length + 1] = END_BYTE;
 
@@ -387,14 +392,18 @@ void serial_output(int msg_type, uint8_t data[], size_t data_length) {
 
     uint8_t* packet = build_packet(msg_type, data, data_length);
 
-    // LOG_ERROR("%x, %x, %x, %x, %x, %x, %x, %x, %x", packet[0], packet[1], packet[2], packet[3], packet[4], packet[5], packet[6], packet[7], packet[data_length+5]);
+    LOG_DEBUG("Return packet start and end bytes=%x, %x, %x, %x, %x, %x, %x, %x, %x", 
+        packet[0], packet[1], packet[2], packet[3], packet[4], packet[5], packet[6], packet[7], packet[data_length+5]);
 
     #ifdef USE_USB_CDC
     // Implemented as workaround since fwrite was randomly adding 0x0d bytes in the middle of the return packets.
     // TODO: make sure that the tud method is implemented nicely throughout the protocol
     if (tud_cdc_connected()) {
+        LOG_INFO("Writing return packet");
         tud_cdc_write(packet, data_length+6);
+        LOG_INFO("packet write");
         tud_cdc_write_flush(); 
+        LOG_INFO("write flush");
     }
     // fwrite(packet, 1, data_length+6, stdout);
     // fflush(stdout);
@@ -557,10 +566,14 @@ void wait_for_pin_low(uint pin) {
     gpio_init(pin);
     gpio_set_dir(pin, GPIO_IN);
     gpio_pull_up(pin);
+
+    LOG_INFO("Awaiting trigger.");
     
     while (gpio_get(pin) == 1) {
         tight_loop_contents();
     }
+
+    LOG_INFO("Triggered.");
 }
 
 
@@ -593,7 +606,7 @@ int main() {
 
             serial_output(MSG_RETURN_RX, rx_buffer, num_pulses);
         }
-
+        LOG_INFO("Looping in main");
     }
 
     shutdown_shot();
