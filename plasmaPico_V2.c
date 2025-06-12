@@ -352,7 +352,7 @@ uint8_t* build_packet(int msg_type, uint8_t data[], size_t data_length) {
 
     size_t packet_length = 4 + data_length + 1 + 1;
 
-    LOG_INFO("Building return packet of packet_length= %u and msg_type= %d", packet_length, msg_type);
+    LOG_INFO("Building return packet of packet_length= %u and msg_type= 0x%x", packet_length, (uint8_t)msg_type);
 
     uint8_t* packet = malloc(packet_length);
     if (!packet) {
@@ -395,15 +395,29 @@ void serial_output(int msg_type, uint8_t data[], size_t data_length) {
     LOG_DEBUG("Return packet start and end bytes=%x, %x, %x, %x, %x, %x, %x, %x, %x", 
         packet[0], packet[1], packet[2], packet[3], packet[4], packet[5], packet[6], packet[7], packet[data_length+5]);
 
+    LOG_INFO("packet built");
     #ifdef USE_USB_CDC
     // Implemented as workaround since fwrite was randomly adding 0x0d bytes in the middle of the return packets.
     // TODO: make sure that the tud method is implemented nicely throughout the protocol
     if (tud_cdc_connected()) {
         LOG_INFO("Writing return packet");
-        tud_cdc_write(packet, data_length+6);
-        LOG_INFO("packet write");
-        tud_cdc_write_flush(); 
-        LOG_INFO("write flush");
+        LOG_INFO("packet[0]=%x, packet_length=%u", packet[0], (data_length+6));
+        
+        // Using packet chunking
+        const size_t chunk_size = 64; // Optimal chunk size for tinyUSB
+        size_t remaining = data_length + 6; // data + wrapper
+        const uint8_t *data_ptr = packet;
+
+        while (remaining > 0) {
+            size_t to_send = (remaining > chunk_size) ? chunk_size : remaining; // Sends full chunk or all remaining bytes if under a full chunk is all that remains
+            size_t sent = tud_cdc_write(data_ptr, to_send);
+
+            data_ptr += sent;
+            remaining -= sent;
+
+            // Flush after each chunk
+            tud_cdc_write_flush();
+        }
     }
     // fwrite(packet, 1, data_length+6, stdout);
     // fflush(stdout);

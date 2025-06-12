@@ -273,17 +273,17 @@ if __name__ == "__main__":
         controller.start_listener_thread()
 
         # Test usage
-        maximum = 200
+        maximum = 15000
         nextNum = 100
         flip = False
         pulseList = []
         for i in range(0, maximum):
-            pulseList.append(int(nextNum))
+            pulseList.append(int(math.floor(nextNum)))
 
             if flip == False:
-                nextNum += 1
+                nextNum += 0.05
             elif flip == True:
-                nextNum -= 1
+                nextNum -= 0.05
             
             if nextNum >= 200:
                 flip = True
@@ -293,7 +293,7 @@ if __name__ == "__main__":
             #     pulseList.append(50)
             # else:
             #     pulseList.append(150)
-        print(f"sendingData={pulseList}")
+        #print(f"sendingData={pulseList}")
         print("Sending PWM pulses...")
         controller.send_pwm_pulses(pulseList)
 
