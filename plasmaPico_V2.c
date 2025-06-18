@@ -35,6 +35,9 @@ uint32_t __not_in_flash("pwm") nextState, cycleCount;
 static volatile uint32_t __not_in_flash("pwm") delay;
 static volatile uint32_t __not_in_flash("pwm") target;
 
+// Helps with lower bound on DCP edge case
+uint8_t __not_in_flash("pwm") last_state = 0;
+
 semaphore_t pwm_sem;
 
 // The Number of the PIO State Machine
@@ -447,18 +450,27 @@ void __time_critical_func(on_pwm_wrap)() {
 
    // Finds nextState from target
    if (target < 100) { // Negative pulses
-    nextState = negCycle;
-    delay = (100-target) * 5; // Delay in PIO cycles @ 25 MHz
+        nextState = negCycle;
+        delay = (100-target) * 5; // Delay in PIO cycles @ 25 MHz
     } else { // Positive pulses
         nextState = possCycle;
         delay = (target-99) * 5; // Delay in PIO cycles @ 25 MHz
     }
 
     // Sets Lower bound on DCP (1 us + switching time)/20 us ~7.5%
-    if (delay < 25) {nextState = freeCycle;} // TODO: add back in subdividing dead zone
-    // Sets Upper bound on DCP (18 us + switching time)/20 us ~92.5%
-    if (delay > 450) {delay = 450;}              
-
+    if (delay < 25) {
+        if (delay > 12 && last_state == 0) { 
+            // Subdivides the lower bound "dead zone" into two sections and emulates 3.75% power for that zone
+            delay = 25;
+            last_state = 1;
+        } else {
+            nextState = freeCycle;
+            last_state = 0;
+        }
+    } else {
+        // Sets Upper bound on DCP (18 us + switching time)/20 us ~92.5%
+        if (delay > 450) {delay = 450;}     
+    }     
 
     // Sets nextState for the next cycle with the new delay
     nextState = nextState | ( delay << 8);

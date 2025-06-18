@@ -13,15 +13,15 @@ try:
     # Test usage
     maximum = 15000
     nextNum = 100
-    flip = False
+    flip = True
     pulseList = []
     for i in range(0, maximum):
         pulseList.append(int(math.floor(nextNum)))
 
         if flip == False:
-            nextNum += 0.05
+            nextNum += 0.1
         elif flip == True:
-            nextNum -= 0.05
+            nextNum -= 0.1
         
         if nextNum >= 200:
             flip = True
