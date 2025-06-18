@@ -16,6 +16,7 @@ class SerialControllerCLI(cmd.Cmd):
         super().__init__(*args, **kwargs)
         self.controller = SerialController(port=port, baudrate=baudrate, debug=True)
         self.controller.start_listener_thread()
+        self.pulseData = []
         
     def preloop(self):
         """Initialize before command loop starts"""
@@ -170,7 +171,7 @@ class SerialControllerCLI(cmd.Cmd):
         response = self.controller.get_response(timeout=timeout)
         if response:
             msg_type, data = response
-            print(f"Received response: Type={msg_type}, Data={data}")
+            print(f"Received response: Type={msg_type}, Length={len(data)}")
         else:
             print("No response received within timeout period")
             

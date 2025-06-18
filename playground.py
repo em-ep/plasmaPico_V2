@@ -3,6 +3,7 @@ from serial_controller import *
 import serial
 import math as m
 import matplotlib.pyplot as plt
+import csv
 
 
 try:
@@ -12,25 +13,12 @@ try:
 
     # Test usage
     maximum = 15000
+    periods = 4
     nextNum = 100
     flip = True
     pulseList = []
     for i in range(0, maximum):
-        pulseList.append(int(math.floor(nextNum)))
-
-        if flip == False:
-            nextNum += 0.1
-        elif flip == True:
-            nextNum -= 0.1
-        
-        if nextNum >= 200:
-            flip = True
-        elif nextNum <= 1:
-            flip = False
-        # if i%2 == 0:
-        #     pulseList.append(50)
-        # else:
-        #     pulseList.append(150)
+        pulseList.append(int(math.floor(((50 * math.sin(math.radians(360 * (i/maximum) * periods)))) + 100)))
     #print(f"sendingData={pulseList}")
     print("Sending PWM pulses...")
     controller.send_pwm_pulses(pulseList)
@@ -44,6 +32,12 @@ try:
 
     plt.plot(data)
     plt.show()
+
+    with open('playground_output.csv', 'w', newline='') as f:
+
+        write = csv.writer(f)
+        for item in data:
+            write.writerow([item])
 
 
 except serial.SerialException as e:
