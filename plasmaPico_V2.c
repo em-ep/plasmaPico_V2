@@ -561,7 +561,7 @@ void run_shot(uint16_t pulseCycles) {
    uint32_t setpoint;
    float measurement; // ADC in
    const float conversion_factor = 3.3f / (1 << 12); // Convert ADC signal to voltage
-   const float scale_factor = 50.0f; // Scales ADC result to -100 - 100 range (TODO: Confirm this)
+   const float scale_factor = 100.0f; // Scales ADC result to -100 - 100 range (TODO: Confirm this)
 
     // Loads freewheeling as first PWM pulse
     delay = 250;
@@ -575,7 +575,7 @@ void run_shot(uint16_t pulseCycles) {
     for (uint16_t cycle = 0; cycle < pulseCycles; cycle++) {
         setpoint = pulse_buffer[cycle];
 
-        measurement = (adc_read() * conversion_factor * scale_factor - 50); // TODO: switch to rolling ADC implementation !! DO THIS SOON
+        measurement = ((adc_read() * conversion_factor) * scale_factor); // TODO: switch to rolling ADC implementation !! DO THIS SOON
         adc_block[cycle] = measurement;
 
         sem_acquire_blocking(&pwm_sem);
