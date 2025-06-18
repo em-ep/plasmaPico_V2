@@ -13,6 +13,7 @@ class MessageType(Enum):
     MSG_MANUAL = 0x02
     MSG_CONFIG = 0x03
     MSG_RETURN_RX = 0x80
+    MSG_RETURN_ADC = 0x82
 
 
 class SerialController:
@@ -158,7 +159,7 @@ class SerialController:
                             parsed = self.parse_packet(bytes(buffer))
                             if parsed:
                                 self.received_packets.append(parsed)
-                                if parsed[0] == MessageType.MSG_RETURN_RX:
+                                if parsed[0] == MessageType.MSG_RETURN_RX or parsed[0] == MessageType.MSG_RETURN_ADC:
                                     self._response_queue.put(parsed)
                                 buffer = bytearray() # clear buffer
                                 continue
@@ -205,7 +206,7 @@ class SerialController:
                         parsed = self.parse_packet(bytes(buffer))
                         if parsed:
                             self.received_packets.append(parsed)
-                            if parsed[0] == MessageType.MSG_RETURN_RX:
+                            if parsed[0] == MessageType.MSG_RETURN_RX or parsed[0] == MessageType.MSG_RETURN_ADC:
                                 self._response_queue.put(parsed)
                             
                             return parsed

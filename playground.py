@@ -23,12 +23,13 @@ try:
     print("Sending PWM pulses...")
     controller.send_pwm_pulses(pulseList)
 
-    response = controller.get_response(timeout=2.0)
-    if response:
-        msg_type, data = response
-        print(f"Received response {i}: Type={msg_type}, length={len(data)}")
-    else:
-        print(f"none received {i}")
+    for i in range(2):
+        response = controller.get_response(timeout=2.0)
+        if response:
+            msg_type, data = response
+            print(f"Received response {i}: Type={msg_type}, length={len(data)}")
+        else:
+            print(f"none received {i}")
 
     plt.plot(data)
     plt.show()

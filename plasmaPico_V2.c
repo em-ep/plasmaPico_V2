@@ -152,6 +152,9 @@ uint8_t __not_in_flash("pwm") *rx_buffer = NULL;
 uint8_t __not_in_flash("pwm") *pulse_buffer = NULL;
 uint16_t num_pulses = 0;
 
+// ADC Block
+uint8_t* adc_block;
+uint8_t adc_block_cs;
 
 // === Hardware-Agnostic Serial Helpers ===
 bool serial_connected() {
@@ -298,9 +301,13 @@ void serial_input() {
                 ser_state = (expected_length > 0) ? WAIT_DATA : WAIT_CHECKSUM;
 
                 rx_buffer = (uint8_t*)calloc(sizeof(uint8_t), expected_length * sizeof(uint8_t));
+                adc_block = (uint8_t*)calloc(sizeof(uint8_t), expected_length * sizeof(uint8_t));
                 if (rx_buffer == NULL) {
                     LOG_ERROR("Memory allocation failed for rx_buffer");
                     ser_state = WAIT_START;
+                }
+                if (adc_block == NULL) {
+                    LOG_ERROR("Memory allocation failed for adc_block");
                 }
 
                 break;
@@ -531,7 +538,16 @@ void init_shot() {
     pwm_config_set_wrap(&config, 499);   // Wrap every 20 us (0-499)
     pwm_init(0, &config, false);
 
+    
+    // Set up ADC
+    adc_init();
+    // Make sure GPIO is high-impedance, no pullups etc
+    adc_gpio_init(26);
+    // Select ADC input 0 (GPIO26 (i.e. pin 31))
+    adc_select_input(0);
 
+
+    // Semaphore for CPU <--> PWM
     sem_init(&pwm_sem, 1, 1);
 
     return;
@@ -542,6 +558,10 @@ void run_shot(uint16_t pulseCycles) {
     /*
     Runs shot pulses
     */
+   uint32_t setpoint;
+   float measurement; // ADC in
+   const float conversion_factor = 3.3f / (1 << 12); // Convert ADC signal to voltage
+   const float scale_factor = 50.0f; // Scales ADC result to -100 - 100 range (TODO: Confirm this)
 
     // Loads freewheeling as first PWM pulse
     delay = 250;
@@ -550,13 +570,16 @@ void run_shot(uint16_t pulseCycles) {
     // Start PWM
     pwm_set_enabled(0, true);
     //busy_wait_ms(10);
-    int new_target = 0;
 
     // Pulse Loop
     for (uint16_t cycle = 0; cycle < pulseCycles; cycle++) {
-        new_target = pulse_buffer[cycle];
+        setpoint = pulse_buffer[cycle];
+
+        measurement = (adc_read() * conversion_factor * scale_factor - 50); // TODO: switch to rolling ADC implementation !! DO THIS SOON
+        adc_block[cycle] = measurement;
+
         sem_acquire_blocking(&pwm_sem);
-        target = new_target;
+        target = setpoint;
     }
     
     // Shutdown PWM
@@ -630,6 +653,7 @@ int main() {
             run_shot(num_pulses);
             current_state = STATE_IDLE;
 
+            serial_output(MSG_RETURN_ADC, adc_block, num_pulses);
             serial_output(MSG_RETURN_RX, rx_buffer, num_pulses);
         }
         LOG_INFO("Looping in main");
