@@ -44,6 +44,77 @@ semaphore_t pwm_sem;
 uint __not_in_flash("pwm") sm;
 
 
+// === PID Controller ===
+typedef struct {
+    /* Controller Gains */
+    float Kp;
+    float Ki;
+    float Kd;
+
+    /* Output Limits */
+    float limMin;
+    float limMax;
+
+    /* Integrator Limits */
+    float limMinInt;
+    float limMaxInt;
+
+    /* Sample Time (s) */
+    float T;
+
+    /* Controller "Memory" */
+    float integrator;
+    float prevError;        // for integrator
+    float differentiator;
+    float prevMeasurement;  // for differentiator
+
+    /* Controller Output */
+    float out;
+
+} pid_controller;
+
+
+void pid_controller_init(pid_controller *pid) {
+    // Clear controller variables
+    pid->integrator = 0.0f;
+    pid->prevError = 0.0f;
+
+    pid->differentiator = 0.0f;
+    pid->prevMeasurement = 0.0f;
+
+    pid->out = 0.0f;
+}
+
+
+float __time_critical_func(pid_controller_update)(pid_controller *pid, float setpoint, float measurement) {
+    float error = setpoint - measurement;
+
+    // Proportional
+    float proportional = pid->Kp * error;
+
+    // Integral
+    pid->integrator = pid->Ki * pid->T * (pid->integrator + error);
+
+    // TODO: Add integrator clamping
+
+    // Derivative
+    pid->differentiator = error - pid->prevError;
+
+    // Compute output and apply limits
+    pid->out = proportional + pid->integrator + pid->differentiator;
+
+    if (pid->out > pid->limMax) {pid->out = pid->limMax;}
+    else if (pid->out < pid->limMin) {pid->out = pid->limMin;}
+
+    // Store error and measurement for next cycle
+    pid->prevError = error;
+    pid->prevMeasurement = measurement;
+
+    // Return controller output
+    return pid->out;
+}
+
+
 // === Status LED Initialization ===
 #define LED_PIN 25 // Onboard LED
 
@@ -144,7 +215,7 @@ typedef enum {
 MessageType current_msg_type;
 
 #define MSG_RETURN_RX 0x80
-#define MSG_RETURN_PULSE 0x81
+#define MSG_RETURN_PID 0x81
 #define MSG_RETURN_ADC 0x82
 
 // Recieved pulse buffer
@@ -154,7 +225,9 @@ uint16_t num_pulses = 0;
 
 // ADC Block
 uint8_t* adc_block;
-uint8_t adc_block_cs;
+
+// pid->out Block
+uint8_t* pid_block;
 
 // === Hardware-Agnostic Serial Helpers ===
 bool serial_connected() {
@@ -302,12 +375,16 @@ void serial_input() {
 
                 rx_buffer = (uint8_t*)calloc(sizeof(uint8_t), expected_length * sizeof(uint8_t));
                 adc_block = (uint8_t*)calloc(sizeof(uint8_t), expected_length * sizeof(uint8_t));
+                pid_block = (uint8_t*)calloc(sizeof(uint8_t), expected_length * sizeof(uint8_t));
                 if (rx_buffer == NULL) {
                     LOG_ERROR("Memory allocation failed for rx_buffer");
                     ser_state = WAIT_START;
                 }
                 if (adc_block == NULL) {
                     LOG_ERROR("Memory allocation failed for adc_block");
+                }
+                if (pid_block == NULL) {
+                    LOG_ERROR("Memory allocation failed for pid_block");
                 }
 
                 break;
@@ -567,6 +644,27 @@ void run_shot(uint16_t pulseCycles) {
     delay = 250;
     nextState = (stop2free << 24) | (( delay << 8) | free2stop);
 
+
+    // Set up PID
+    // PID Definitions (TODO: Move to header?)
+    #define PID_KP 1.0f
+    #define PID_KI 1.0f
+    #define PID_KD 1.0f
+
+    #define PID_LIM_MIN 0.0f
+    #define PID_LIM_MAX 200.0f
+
+    #define PID_LIM_MIN_INT 0.0f
+    #define PID_LIM_MAX_INT 100.0f
+
+    #define SAMPLE_TIME_S 0.00002 // 20us
+
+    pid_controller pid = {  PID_KP, PID_KI, PID_KD,
+                            PID_LIM_MIN, PID_LIM_MAX,
+			                PID_LIM_MIN_INT, PID_LIM_MAX_INT,
+                            SAMPLE_TIME_S };
+    pid_controller_init(&pid);
+
     // Start PWM
     pwm_set_enabled(0, true);
     //busy_wait_ms(10);
@@ -575,11 +673,17 @@ void run_shot(uint16_t pulseCycles) {
     for (uint16_t cycle = 0; cycle < pulseCycles; cycle++) {
         setpoint = pulse_buffer[cycle];
 
-        measurement = ((adc_read() * conversion_factor) * scale_factor); // TODO: switch to rolling ADC implementation !! DO THIS SOON
+        measurement = (((adc_read() * conversion_factor) * scale_factor)/2); // TODO: switch to rolling ADC implementation !! DO THIS SOON
         adc_block[cycle] = measurement;
 
+        // PID Control
+        pid_controller_update(&pid, (float)setpoint, measurement);
+
+        // Loads PID modulated waveform to return array
+        pid_block[cycle] = pid.out;
+
         sem_acquire_blocking(&pwm_sem);
-        target = setpoint;
+        target = pid.out;
     }
     
     // Shutdown PWM
@@ -653,8 +757,12 @@ int main() {
             run_shot(num_pulses);
             current_state = STATE_IDLE;
 
-            serial_output(MSG_RETURN_ADC, adc_block, num_pulses);
+            sleep_ms(1000);
             serial_output(MSG_RETURN_RX, rx_buffer, num_pulses);
+            sleep_ms(1000);
+            serial_output(MSG_RETURN_ADC, adc_block, num_pulses);
+            sleep_ms(1000);
+            serial_output(MSG_RETURN_PID, pid_block, num_pulses);
         }
         LOG_INFO("Looping in main");
     }
