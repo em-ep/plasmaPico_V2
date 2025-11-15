@@ -1,4 +1,5 @@
 build
+outputs
 .venv
 .vscode
 serTest.py
