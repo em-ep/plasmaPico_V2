@@ -258,7 +258,7 @@ class SerialController:
         packet = self.build_packet(MessageType.MSG_MANUAL, switchConfig)
         self.ser.write(packet)
 
-        print(f"Sent manual commang: {switchConfig}")
+        print(f"Sent manual command: {switchConfig}")
 
     
     def send_configuration(self, param_id: int, value: int):

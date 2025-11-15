@@ -196,7 +196,7 @@ class SerialControllerCLI(cmd.Cmd):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python cli.py <serial_port> [baudrate]")
+        print("Usage: python ser-cli.py <serial_port> [baudrate]")
         print("Available ports:")
         import serial.tools.list_ports
         ports = serial.tools.list_ports.comports()

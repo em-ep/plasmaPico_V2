@@ -266,7 +266,31 @@ int read_serial_byte() {
 }
 
 
-void handle_message() {
+void reset_message_state() {
+    /*
+    Resets all message states to prepare for the next message
+    */
+
+    if (rx_buffer != NULL) {
+        free(rx_buffer);
+        rx_buffer = NULL;
+    }
+    if (adc_block != NULL) {
+        free(adc_block);
+        adc_block = NULL;
+    }
+    if (pid_block != NULL) {
+        free(pid_block);
+        pid_block = NULL;
+    }
+    pulse_buffer = NULL;  // Note: don't free this - it points to rx_buffer
+    num_pulses = 0;
+    current_state = STATE_IDLE;
+    
+    LOG_DEBUG("Message state reset complete");
+}
+
+void handle_message(int expected_length) {
     /*
     Handles the completed input buffer depending upon the message type as described below:
 
@@ -275,8 +299,6 @@ void handle_message() {
     MSG_CONFIG: Parses and sets new configuration
     */
 
-    int switchState[4];
-
     switch (current_msg_type) {
 
         case MSG_PWM:
@@ -284,14 +306,35 @@ void handle_message() {
         break;
 
         case MSG_MANUAL:
+        LOG_INFO("Manual Read");
+            if (rx_buffer == NULL || expected_length != 4) {
+                LOG_ERROR("Invalid manual message: buffer=%p, length=%u", 
+                        rx_buffer, expected_length);
+                reset_message_state();
+                break;
+            }
+            
+            LOG_INFO("Initializing GPIO pins");
+            // Initialize GPIO pins if not already done
+            for (int i = 0; i < 4; i++) {
+                gpio_init(startPin + i);
+                gpio_set_dir(startPin + i, GPIO_OUT);
+            }
+
+            LOG_INFO("Applying switch configuration");
             // Gets the switch configurations from rx_buffer and applies them to the output pins
-            for (int i = 0; i < 5; i++) {
-                if (rx_buffer[3+i] <= 1) {
-                    gpio_put(startPin + i, rx_buffer[3+i]);
+            for (int i = 0; i < 4; i++) {
+                if (rx_buffer[i] <= 1) {
+                    gpio_put(startPin + i, rx_buffer[i]);
+                    LOG_DEBUG("Set pin %d to %d", startPin + i, rx_buffer[i])
                 } else {
                     LOG_ERROR("Manual switch settings must be 0 or 1");
+                    // Set to safe state
+                    gpio_put(startPin + i, 0);
                 }
             }
+        // Reset state
+        reset_message_state();
         break;
 
         case MSG_CONFIG:
@@ -301,6 +344,7 @@ void handle_message() {
     
     default:
         LOG_WARN("Unknown message type 0x%02X\n", current_msg_type);
+        reset_message_state();
     }
     
     return;
@@ -341,6 +385,11 @@ void serial_input() {
                 if (byte == START_BYTE) {
                     ser_state = WAIT_TYPE;
 
+                    // Reset parser state for new message
+                    expected_length = 0;
+                    checksum = 0;
+                    data_index = 0;
+                    ser_state = WAIT_TYPE;
                     current_state = STATE_RECEIVING; // LED indicator data incoming
                 }
                 break;
@@ -366,6 +415,7 @@ void serial_input() {
                 // TODO: make sure this is a clean exit
                 if (expected_length >= MAX_PULSES){
                     LOG_WARN("Length of packet exceeds MAX_PULSES. Resetting.");
+                    reset_message_state();
                     ser_state = WAIT_START;
                     break;
                 }
@@ -373,18 +423,13 @@ void serial_input() {
                 data_index = 0;
                 ser_state = (expected_length > 0) ? WAIT_DATA : WAIT_CHECKSUM;
 
-                rx_buffer = (uint8_t*)calloc(sizeof(uint8_t), expected_length * sizeof(uint8_t));
-                adc_block = (uint8_t*)calloc(sizeof(uint8_t), expected_length * sizeof(uint8_t));
-                pid_block = (uint8_t*)calloc(sizeof(uint8_t), expected_length * sizeof(uint8_t));
-                if (rx_buffer == NULL) {
-                    LOG_ERROR("Memory allocation failed for rx_buffer");
+                rx_buffer = (uint8_t*)calloc(expected_length, sizeof(uint8_t));
+                adc_block = (uint8_t*)calloc(expected_length, sizeof(uint8_t));
+                pid_block = (uint8_t*)calloc(expected_length, sizeof(uint8_t));
+                if (rx_buffer == NULL || adc_block == NULL || pid_block == NULL) {
+                    LOG_ERROR("Memory allocation failed for message buffers");
+                    reset_message_state();
                     ser_state = WAIT_START;
-                }
-                if (adc_block == NULL) {
-                    LOG_ERROR("Memory allocation failed for adc_block");
-                }
-                if (pid_block == NULL) {
-                    LOG_ERROR("Memory allocation failed for pid_block");
                 }
 
                 break;
@@ -404,6 +449,7 @@ void serial_input() {
                     ser_state = WAIT_END;
                 } else {
                     LOG_WARN("Checksum failed. Resetting.");
+                    reset_message_state();
                     ser_state = WAIT_START; // Reset on checksum error TODO: make sure that everything clears properly on reset
                 }
                 break;
@@ -415,7 +461,7 @@ void serial_input() {
                     current_state = STATE_DATA_READY;
                     LOG_INFO("Complete packet of length %u received.", expected_length);
 
-                    handle_message(); // Processes complete packet
+                    handle_message(expected_length); // Processes complete packet
                 }
                 ser_state = WAIT_START; // Reset TODO: make sure this resets cleanly
                 return;
@@ -750,7 +796,6 @@ int main() {
         // Runs shot if one is sent
         if (current_msg_type == MSG_PWM) {
             // TODO: add ack before shot
-
             wait_for_pin_low(TRIGGER_PIN);
 
             current_state = STATE_OUTPUT_SHOT; // for update_led()
@@ -763,15 +808,12 @@ int main() {
             serial_output(MSG_RETURN_ADC, adc_block, num_pulses);
             sleep_ms(1000);
             serial_output(MSG_RETURN_PID, pid_block, num_pulses);
+
+            reset_message_state();
         }
-        LOG_INFO("Looping in main");
     }
 
     shutdown_shot();
-
-    // put somwhere else later
-    free(rx_buffer);
-    rx_buffer = NULL;
 
     LOG_INFO("end");
 
