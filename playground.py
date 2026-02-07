@@ -5,8 +5,6 @@ import math as m
 import matplotlib.pyplot as plt
 import csv
 
-#blah blah
-
 try:
     # Initialize controller (change port as needed)
     controller = SerialController(port='COM3', debug=True)
@@ -19,8 +17,8 @@ try:
     flip = True
     pulseList = []
     for i in range(0, maximum):
-        pulseList.append(100)
-        #pulseList.append(int(math.floor(((50 * math.sin(math.radians(360 * (i/maximum) * periods)))) + 100)))
+        #pulseList.append(100)
+        pulseList.append(int(math.floor(((50 * math.sin(math.radians(360 * (i/maximum) * periods)))) + 100)))
     #print(f"sendingData={pulseList}")
     print("Sending PWM pulses...")
     controller.send_pwm_pulses(pulseList)
